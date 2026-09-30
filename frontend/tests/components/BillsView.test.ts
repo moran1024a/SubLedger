@@ -1,0 +1,172 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
+import { flushPromises, shallowMount } from '@vue/test-utils'
+import BillsView from '@/views/bills/BillsView.vue'
+import { listBills, updateBillValidity } from '@/api/bills'
+import { listPlans } from '@/api/plans'
+import { ElMessageBox } from 'element-plus'
+import { ApiError, type BillOccurrence, type BillOccurrencePage } from '@/types/api'
+
+vi.mock('@/api/bills', () => ({ listBills: vi.fn(), updateBillValidity: vi.fn() }))
+vi.mock('@/api/plans', () => ({ listPlans: vi.fn() }))
+vi.mock('element-plus', () => ({
+  ElMessage: { success: vi.fn(), error: vi.fn() },
+  ElMessageBox: { confirm: vi.fn() },
+}))
+
+const bill = {
+  id: 3,
+  plan_id: 2,
+  plan_name: '云服务',
+  due_date: '2026-07-20',
+  amount: '12.50',
+  is_valid: true,
+  time_status: 'upcoming' as const,
+  cycle_type: 'custom_days' as const,
+  cycle_days: 14,
+}
+
+interface BillsVm {
+  bills: BillOccurrence[]
+  total: number
+  page: number
+  loading: boolean
+  error: ApiError | null
+  start: string | null
+  end: string | null
+  load: () => Promise<void>
+}
+
+function deferred() {
+  let resolve!: (value: BillOccurrencePage) => void
+  let reject!: (cause: unknown) => void
+  const promise = new Promise<BillOccurrencePage>((done, fail) => {
+    resolve = done
+    reject = fail
+  })
+  return { promise, resolve, reject }
+}
+
+function mountView() {
+  return shallowMount(BillsView, {
+    global: { stubs: { PageHeader: true, LoadingBlock: true, ErrorState: true, EmptyState: true } },
+  })
+}
+
+beforeEach(() => {
+  setActivePinia(createPinia())
+  vi.clearAllMocks()
+  vi.mocked(listPlans).mockResolvedValue([])
+  vi.mocked(listBills).mockResolvedValue({ items: [], page: 1, page_size: 20, total: 0 })
+  vi.mocked(updateBillValidity).mockResolvedValue({} as never)
+  vi.mocked(ElMessageBox.confirm).mockResolvedValue('confirm' as never)
+})
+
+describe('BillsView', () => {
+  it('accepts cleared date controls without stringifying their null values', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as BillsVm
+    vm.start = null
+    vm.end = null
+    await vm.load()
+
+    expect(listBills).toHaveBeenLastCalledWith(
+      expect.objectContaining({ start_date: null, end_date: null }),
+    )
+  })
+
+  it.each(['success', 'error'])(
+    'ignores an older %s while the latest request is pending',
+    async (kind) => {
+      const wrapper = mountView()
+      await flushPromises()
+      const vm = wrapper.vm as unknown as BillsVm
+      const older = deferred()
+      const latest = deferred()
+      vi.mocked(listBills).mockReturnValueOnce(older.promise).mockReturnValueOnce(latest.promise)
+      vm.page = 2
+      const olderLoad = vm.load()
+      vm.page = 3
+      const latestLoad = vm.load()
+
+      if (kind === 'success') older.resolve({ items: [bill], total: 60, page: 2, page_size: 20 })
+      else older.reject(new ApiError({ status: 500, code: 'FAILED', message: '旧请求失败' }))
+      await olderLoad
+      expect(vm.loading).toBe(true)
+      expect(vm.bills).toEqual([])
+      expect(vm.total).toBe(0)
+      expect(vm.error).toBeNull()
+
+      latest.resolve({ items: [{ ...bill, id: 4 }], total: 80, page: 3, page_size: 20 })
+      await latestLoad
+      expect(vm.loading).toBe(false)
+      expect(vm.bills).toEqual([{ ...bill, id: 4 }])
+      expect(vm.total).toBe(80)
+    },
+  )
+
+  it.each(['success', 'error'])('ignores an older %s after the latest response', async (kind) => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as BillsVm
+    const older = deferred()
+    const latest = deferred()
+    vi.mocked(listBills).mockReturnValueOnce(older.promise).mockReturnValueOnce(latest.promise)
+    const olderLoad = vm.load()
+    const latestLoad = vm.load()
+    latest.resolve({ items: [{ ...bill, id: 4 }], total: 80, page: 3, page_size: 20 })
+    await latestLoad
+
+    if (kind === 'success') older.resolve({ items: [bill], total: 60, page: 2, page_size: 20 })
+    else older.reject(new ApiError({ status: 500, code: 'FAILED', message: '旧请求失败' }))
+    await olderLoad
+    expect(vm.bills).toEqual([{ ...bill, id: 4 }])
+    expect(vm.total).toBe(80)
+    expect(vm.error).toBeNull()
+    expect(vm.loading).toBe(false)
+  })
+
+  it('keeps the latest error when an older successful response arrives later', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as BillsVm
+    const older = deferred()
+    const latest = deferred()
+    vi.mocked(listBills).mockReturnValueOnce(older.promise).mockReturnValueOnce(latest.promise)
+    const olderLoad = vm.load()
+    const latestLoad = vm.load()
+    const failure = new ApiError({ status: 500, code: 'FAILED', message: '当前请求失败' })
+    latest.reject(failure)
+    await latestLoad
+    older.resolve({ items: [bill], total: 60, page: 2, page_size: 20 })
+    await olderLoad
+
+    expect(vm.error).toBe(failure)
+    expect(vm.bills).toEqual([])
+    expect(vm.total).toBe(0)
+    expect(vm.loading).toBe(false)
+  })
+
+  it('uses the bill response cycle data and confirms invalidation', async () => {
+    const wrapper = shallowMount(BillsView, {
+      global: {
+        stubs: { PageHeader: true, LoadingBlock: true, ErrorState: true, EmptyState: true },
+      },
+    })
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      cycleText: (value: typeof bill) => string
+      toggle: (value: typeof bill) => Promise<void>
+    }
+
+    expect(vm.cycleText(bill)).toBe('每 14 天')
+    await vm.toggle(bill)
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('不再计入统计'),
+      expect.any(String),
+      expect.any(Object),
+    )
+    expect(updateBillValidity).toHaveBeenCalledWith(3, false)
+  })
+})

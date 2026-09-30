@@ -1,0 +1,183 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, shallowMount } from '@vue/test-utils'
+import UserLogsView from '@/views/admin/UserLogsView.vue'
+import { downloadUserLog, getUserLogs, saveBlob } from '@/api/logs'
+import { listUsers } from '@/api/users'
+import { ApiError, type LogFile } from '@/types/api'
+
+const router = vi.hoisted(() => ({ replace: vi.fn() }))
+vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }), useRouter: () => router }))
+vi.mock('@/api/users', () => ({ listUsers: vi.fn() }))
+vi.mock('@/api/logs', () => ({ getUserLogs: vi.fn(), downloadUserLog: vi.fn(), saveBlob: vi.fn() }))
+vi.mock('element-plus', () => ({ ElMessage: { error: vi.fn() } }))
+
+const file: LogFile = { date: '2026-09-30', filename: '2026-09-30.log', size: 10, modified_at: '' }
+
+interface UserLogsVm {
+  selectedId: number | undefined
+  files: LogFile[]
+  loading: boolean
+  error: ApiError | null
+  downloadFile: (filename?: string) => Promise<void>
+}
+
+function deferred() {
+  let resolve!: (value: LogFile[]) => void
+  let reject!: (cause: unknown) => void
+  const promise = new Promise<LogFile[]>((done, fail) => {
+    resolve = done
+    reject = fail
+  })
+  return { promise, resolve, reject }
+}
+
+function mountView() {
+  return shallowMount(UserLogsView, {
+    global: {
+      stubs: {
+        PageHeader: { template: '<header><slot name="actions" /></header>' },
+        LogFileTable: true,
+        EmptyState: true,
+        LoadingBlock: true,
+        ErrorState: true,
+        'el-button': {
+          props: ['disabled', 'loading'],
+          template:
+            '<button :disabled="disabled || loading" @click="$emit(\'click\')"><slot /></button>',
+        },
+      },
+    },
+  })
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  vi.mocked(listUsers).mockResolvedValue([])
+  vi.mocked(getUserLogs).mockResolvedValue([])
+  router.replace.mockResolvedValue(undefined)
+  vi.mocked(downloadUserLog).mockResolvedValue({ blob: new Blob(['log']), filename: file.filename })
+})
+
+describe('UserLogsView', () => {
+  it.each(['success', 'error'])(
+    'ignores an older user %s while the new user is loading',
+    async (kind) => {
+      const wrapper = mountView()
+      await flushPromises()
+      const vm = wrapper.vm as unknown as UserLogsVm
+      const older = deferred()
+      const latest = deferred()
+      vi.mocked(getUserLogs).mockReturnValueOnce(older.promise).mockReturnValueOnce(latest.promise)
+      vm.selectedId = 1
+      vm.selectedId = 2
+
+      expect(getUserLogs).toHaveBeenNthCalledWith(1, 1)
+      expect(getUserLogs).toHaveBeenNthCalledWith(2, 2)
+      if (kind === 'success') older.resolve([file])
+      else older.reject(new ApiError({ status: 500, code: 'FAILED', message: '旧用户查询失败' }))
+      await flushPromises()
+      expect(vm.files).toEqual([])
+      expect(vm.error).toBeNull()
+      expect(vm.loading).toBe(true)
+
+      latest.resolve([{ ...file, filename: 'new-user.log' }])
+      await flushPromises()
+      expect(vm.files).toEqual([{ ...file, filename: 'new-user.log' }])
+      expect(vm.loading).toBe(false)
+    },
+  )
+
+  it.each(['success', 'error'])(
+    'ignores an older user %s after the new user has loaded',
+    async (kind) => {
+      const wrapper = mountView()
+      await flushPromises()
+      const vm = wrapper.vm as unknown as UserLogsVm
+      const older = deferred()
+      const latest = deferred()
+      vi.mocked(getUserLogs).mockReturnValueOnce(older.promise).mockReturnValueOnce(latest.promise)
+      vm.selectedId = 1
+      vm.selectedId = 2
+      latest.resolve([{ ...file, filename: 'new-user.log' }])
+      await flushPromises()
+
+      if (kind === 'success') older.resolve([file])
+      else older.reject(new ApiError({ status: 500, code: 'FAILED', message: '旧用户查询失败' }))
+      await flushPromises()
+      expect(vm.files).toEqual([{ ...file, filename: 'new-user.log' }])
+      expect(vm.error).toBeNull()
+      expect(vm.loading).toBe(false)
+    },
+  )
+
+  it.each(['success', 'error'])(
+    'invalidates an in-flight %s when the selection is cleared',
+    async (kind) => {
+      const wrapper = mountView()
+      await flushPromises()
+      const vm = wrapper.vm as unknown as UserLogsVm
+      const pending = deferred()
+      vi.mocked(getUserLogs).mockReturnValueOnce(pending.promise)
+      vm.selectedId = 1
+      expect(vm.loading).toBe(true)
+      vm.selectedId = undefined
+      expect(vm.files).toEqual([])
+      expect(vm.error).toBeNull()
+      expect(vm.loading).toBe(false)
+
+      if (kind === 'success') pending.resolve([file])
+      else pending.reject(new ApiError({ status: 500, code: 'FAILED', message: '旧用户查询失败' }))
+      await flushPromises()
+      expect(vm.files).toEqual([])
+      expect(vm.error).toBeNull()
+      expect(vm.loading).toBe(false)
+      expect(router.replace).toHaveBeenLastCalledWith({ query: {} })
+      await vm.downloadFile()
+      expect(downloadUserLog).not.toHaveBeenCalled()
+    },
+  )
+
+  it('clears old files immediately and blocks downloads while changing users', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as UserLogsVm
+    vi.mocked(getUserLogs).mockResolvedValueOnce([file])
+    vm.selectedId = 1
+    await flushPromises()
+    expect(wrapper.find('button').element.disabled).toBe(false)
+
+    const pending = deferred()
+    vi.mocked(getUserLogs).mockReturnValueOnce(pending.promise)
+    router.replace.mockReturnValueOnce(new Promise(() => {}))
+    vm.selectedId = 2
+    expect(vm.files).toEqual([])
+    expect(vm.loading).toBe(true)
+    await vm.downloadFile(file.filename)
+    expect(downloadUserLog).not.toHaveBeenCalled()
+    await flushPromises()
+    expect(wrapper.find('button').element.disabled).toBe(true)
+
+    pending.resolve([{ ...file, filename: 'new-user.log' }])
+    await flushPromises()
+    expect(wrapper.find('button').element.disabled).toBe(false)
+    await vm.downloadFile('new-user.log')
+    expect(downloadUserLog).toHaveBeenCalledWith(2, 'new-user.log')
+    expect(saveBlob).toHaveBeenCalledOnce()
+  })
+
+  it('shows the current load error and blocks downloading after failure', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as UserLogsVm
+    const failure = new ApiError({ status: 500, code: 'FAILED', message: '当前用户查询失败' })
+    vi.mocked(getUserLogs).mockRejectedValueOnce(failure)
+    vm.selectedId = 1
+    await flushPromises()
+
+    expect(vm.error).toBe(failure)
+    expect(vm.loading).toBe(false)
+    expect(wrapper.find('button').element.disabled).toBe(true)
+    await vm.downloadFile()
+    expect(downloadUserLog).not.toHaveBeenCalled()
+  })
+})

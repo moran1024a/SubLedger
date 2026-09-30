@@ -1,0 +1,50 @@
+import { describe, expect, it } from 'vitest'
+import {
+  formatCycle,
+  formatDate,
+  formatDaysRemaining,
+  formatMoney,
+  timeToApi,
+  timeToMinutes,
+} from '@/utils/format'
+import { isValidAmount, isValidCycleDays, passwordsMatch } from '@/utils/validation'
+
+describe('format helpers', () => {
+  it('formats money without floating point conversion', () => {
+    expect(formatMoney('1288.00', 'CNY')).toBe('¥1,288.00')
+    expect(formatMoney('68', 'SGD')).toBe('SGD 68.00')
+  })
+
+  it('formats cycles and remaining days', () => {
+    expect(formatCycle('custom_days', 10)).toBe('每 10 天')
+    expect(formatDaysRemaining(0)).toBe('今天')
+    expect(formatDaysRemaining(1)).toBe('还有 1 天')
+    expect(formatDaysRemaining(2)).toBe('还有 2 天')
+  })
+
+  it('keeps pure dates unchanged', () => {
+    expect(formatDate('2026-07-20')).toBe('2026-07-20')
+  })
+
+  it('normalizes notification time and tolerates empty controls', () => {
+    expect(timeToMinutes('09:00:00')).toBe('09:00')
+    expect(timeToMinutes(null)).toBe('')
+    expect(timeToApi('09:00')).toBe('09:00:00')
+    expect(timeToApi(null)).toBe('')
+  })
+})
+
+describe('validation helpers', () => {
+  it('accepts only positive decimal amounts with two places', () => {
+    expect(isValidAmount('12.50')).toBe(true)
+    expect(isValidAmount('0')).toBe(false)
+    expect(isValidAmount('1e2')).toBe(false)
+    expect(isValidAmount('12.345')).toBe(false)
+  })
+
+  it('validates cycle days and passwords', () => {
+    expect(isValidCycleDays('3')).toBe(true)
+    expect(isValidCycleDays('0')).toBe(false)
+    expect(passwordsMatch('password', 'password')).toBe(true)
+  })
+})

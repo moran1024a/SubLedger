@@ -1,0 +1,50 @@
+[app]
+host = "0.0.0.0"
+port = 8000
+timezone = "Asia/Shanghai"
+session_expire_days = 7
+max_users = 15
+
+[database]
+# 所有部署方式都连接用户预先准备的外部 MySQL。
+# 直接运行时可填写宿主机可访问的地址；Docker/1Panel 中的 127.0.0.1 指向 backend 容器自身。
+# 请改为从当前运行环境可访问的外部 MySQL DNS 名称或 IP。
+host = "mysql.example.internal"
+port = 3306
+username = "subledger"
+password = "change-this-password"
+database = "subledger"
+charset = "utf8mb4"
+pool_size = 5
+max_overflow = 5
+pool_recycle = 1800
+pool_timeout = 10
+connect_timeout = 10
+
+[scheduler]
+enabled = true
+bill_check_hour = 0
+bill_check_minute = 5
+notification_interval_seconds = 60
+log_cleanup_hour = 1
+
+[logging]
+# 直接运行时相对于 backend/ 目录；Docker 中对应 /app/logs。
+directory = "logs"
+retention_days = 4
+level = "INFO"
+
+[security]
+# 直接运行时相对于 backend/ 目录；Docker 中对应 /app/data/secret.key。
+secret_key_file = "data/secret.key"
+cookie_secure = false
+cookie_name = "subledger_session"
+# 空列表允许任意公网 SMTP 主机；非空时只允许列表中的精确主机名或 IP（不支持通配符）。
+smtp_allowed_hosts = []
+# 默认拒绝内网、回环及链路本地 SMTP 地址；按需填写精确主机名或 IP 放行。
+# 如配置 smtp_allowed_hosts，内网主机还需同时加入该列表。
+smtp_allow_private_hosts = []
+
+[bootstrap_admin]
+username = "admin"
+password = "change-this-password"
