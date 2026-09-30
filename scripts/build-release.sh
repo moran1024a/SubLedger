@@ -147,6 +147,7 @@ fi
 copy_entries=(
   '.dockerignore'
   '.gitignore'
+  'LICENSE'
   'README.md'
   'docker-compose.1panel.yml'
   'docker-compose.yml'
