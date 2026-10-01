@@ -246,8 +246,6 @@ class AdminSummaryResponse(BaseModel):
     total_users: int
     active_users: int
     inactive_users: int
-    max_users: int
-    remaining_users: int
 
 
 class LogFileResponse(BaseModel):
@@ -259,3 +257,10 @@ class LogFileResponse(BaseModel):
     @field_serializer("modified_at")
     def serialize_modified_at(self, value: datetime) -> str:
         return _serialize_utc(value)
+
+
+class UserPage(BaseModel):
+    items: list[UserResponse]
+    page: int
+    page_size: int
+    total: int

@@ -2,12 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import UserLogsView from '@/views/admin/UserLogsView.vue'
 import { downloadUserLog, getUserLogs, saveBlob } from '@/api/logs'
-import { listUsers } from '@/api/users'
+import { getUser, listUsers } from '@/api/users'
 import { ApiError, type LogFile } from '@/types/api'
 
+const route = vi.hoisted(() => ({ query: {} as Record<string, string> }))
 const router = vi.hoisted(() => ({ replace: vi.fn() }))
-vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }), useRouter: () => router }))
-vi.mock('@/api/users', () => ({ listUsers: vi.fn() }))
+vi.mock('vue-router', () => ({ useRoute: () => route, useRouter: () => router }))
+vi.mock('@/api/users', () => ({ listUsers: vi.fn(), getUser: vi.fn() }))
 vi.mock('@/api/logs', () => ({ getUserLogs: vi.fn(), downloadUserLog: vi.fn(), saveBlob: vi.fn() }))
 vi.mock('element-plus', () => ({ ElMessage: { error: vi.fn() } }))
 
@@ -52,7 +53,8 @@ function mountView() {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(listUsers).mockResolvedValue([])
+  route.query = {}
+  vi.mocked(listUsers).mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
   vi.mocked(getUserLogs).mockResolvedValue([])
   router.replace.mockResolvedValue(undefined)
   vi.mocked(downloadUserLog).mockResolvedValue({ blob: new Blob(['log']), filename: file.filename })
@@ -180,4 +182,23 @@ describe('UserLogsView', () => {
     await vm.downloadFile()
     expect(downloadUserLog).not.toHaveBeenCalled()
   })
+})
+
+it('loads a linked user outside the initial search page', async () => {
+  route.query = { user_id: '201' }
+  vi.mocked(getUser).mockResolvedValue({
+    id: 201,
+    username: 'outside-page',
+    role: 'user',
+    is_active: true,
+    timezone: 'UTC',
+    currency_code: 'CNY',
+    created_at: '',
+    updated_at: '',
+  })
+  const wrapper = mountView()
+  await flushPromises()
+  expect(getUser).toHaveBeenCalledWith(201)
+  expect((wrapper.vm as unknown as UserLogsVm).selectedId).toBe(201)
+  expect(getUserLogs).toHaveBeenCalledWith(201)
 })

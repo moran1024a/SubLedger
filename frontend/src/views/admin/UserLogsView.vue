@@ -3,7 +3,7 @@ import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { downloadUserLog, getUserLogs, saveBlob } from '@/api/logs'
-import { listUsers } from '@/api/users'
+import { getUser, listUsers } from '@/api/users'
 import { ApiError, type CurrentUser, type LogFile } from '@/types/api'
 import PageHeader from '@/components/common/PageHeader.vue'
 import LogFileTable from '@/components/logs/LogFileTable.vue'
@@ -19,9 +19,13 @@ const loading = ref(false)
 const error = ref<ApiError | null>(null)
 const downloading = ref<string | null>(null)
 let requestSequence = 0
-async function loadUsers() {
+let userSearchSequence = 0
+async function loadUsers(q = '') {
+  const sequence = ++userSearchSequence
   try {
-    users.value = (await listUsers()).filter((user) => user.role === 'user')
+    const result = await listUsers({ q, page_size: 100 })
+    if (sequence !== userSearchSequence) return
+    users.value = result.items.filter((user) => user.role === 'user')
   } catch (cause) {
     ElMessage.error(cause instanceof ApiError ? cause.message : '加载用户失败')
   }
@@ -78,14 +82,31 @@ watch(
 onMounted(async () => {
   await loadUsers()
   const queryId = Number(route.query.user_id)
-  if (queryId && users.value.some((user) => user.id === queryId)) selectedId.value = queryId
+  if (Number.isSafeInteger(queryId) && queryId > 0) {
+    try {
+      const target = users.value.find((user) => user.id === queryId) ?? (await getUser(queryId))
+      if (target.role === 'user') {
+        if (!users.value.some((user) => user.id === queryId)) users.value.push(target)
+        selectedId.value = queryId
+      }
+    } catch {
+      ElMessage.error('指定用户不存在或无法加载')
+    }
+  }
 })
 </script>
 <template>
   <div class="page-container">
     <PageHeader title="用户日志"
       ><template #actions
-        ><el-select v-model="selectedId" clearable placeholder="选择用户" style="width: 220px"
+        ><el-select
+          v-model="selectedId"
+          filterable
+          remote
+          :remote-method="loadUsers"
+          clearable
+          placeholder="选择用户"
+          style="width: 220px"
           ><el-option
             v-for="user in users"
             :key="user.id"

@@ -1,5 +1,5 @@
 import { request, requestRoot } from './client'
-import type { AdminSummary, CurrentUser } from '@/types/api'
+import type { AdminSummary, CurrentUser, UserPage } from '@/types/api'
 
 export function updateProfile(
   payload: Partial<Pick<CurrentUser, 'username' | 'timezone' | 'currency_code'>>,
@@ -14,8 +14,14 @@ export function changePassword(current_password: string, new_password: string) {
   })
 }
 
-export function listUsers() {
-  return request<CurrentUser[]>('/admin/users')
+export function listUsers(
+  filters: { q?: string; is_active?: boolean; page?: number; page_size?: number } = {},
+) {
+  const query = new URLSearchParams()
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined && value !== '') query.set(key, String(value))
+  })
+  return request<UserPage>(`/admin/users?${query.toString()}`)
 }
 export function getAdminSummary() {
   return request<AdminSummary>('/admin/summary')

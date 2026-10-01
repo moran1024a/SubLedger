@@ -129,8 +129,6 @@ export interface AdminSummary {
   total_users: number
   active_users: number
   inactive_users: number
-  max_users: number
-  remaining_users: number
 }
 
 export interface HealthResponse {
@@ -174,4 +172,11 @@ export class ApiError extends Error {
     this.requestId = options.requestId
     this.fields = options.fields ?? []
   }
+}
+
+export interface UserPage {
+  items: CurrentUser[]
+  page: number
+  page_size: number
+  total: number
 }

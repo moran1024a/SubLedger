@@ -21,7 +21,6 @@ class AppConfig:
     port: int
     timezone: str
     session_expire_days: int
-    max_users: int
 
 
 @dataclass(frozen=True)
@@ -133,7 +132,6 @@ def load_settings(path: str | Path | None = None) -> Settings:
         port=int(data.get("app", {}).get("port", 8000)),
         timezone=str(data.get("app", {}).get("timezone", "UTC")),
         session_expire_days=int(data.get("app", {}).get("session_expire_days", 7)),
-        max_users=int(data.get("app", {}).get("max_users", 15)),
     )
     database = DatabaseConfig(
         host=str(_require(data, "database", "host")),
@@ -195,8 +193,6 @@ def validate_settings(settings: Settings) -> None:
         raise ConfigError("app.timezone is invalid") from exc
     if settings.app.session_expire_days <= 0:
         raise ConfigError("app.session_expire_days must be greater than zero")
-    if not 1 <= settings.app.max_users <= 15:
-        raise ConfigError("app.max_users must be between 1 and 15")
     if not 1 <= settings.database.port <= 65535:
         raise ConfigError("database.port must be between 1 and 65535")
     if settings.database.pool_size < 1 or settings.database.max_overflow < 0:

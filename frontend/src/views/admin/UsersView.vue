@@ -1,14 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import {
-  createUser,
-  disableUser,
-  enableUser,
-  getAdminSummary,
-  listUsers,
-  resetUserPassword,
-} from '@/api/users'
+import { createUser, disableUser, enableUser, listUsers, resetUserPassword } from '@/api/users'
 import { ApiError, type CurrentUser } from '@/types/api'
 import PageHeader from '@/components/common/PageHeader.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
@@ -17,7 +10,11 @@ import ErrorState from '@/components/common/ErrorState.vue'
 import { getFieldErrors } from '@/utils/apiErrors'
 
 const users = ref<CurrentUser[]>([])
-const maxUsers = ref<number | null>(null)
+const page = ref(1)
+const pageSize = ref(20)
+const total = ref(0)
+let applied = { q: '', is_active: undefined as boolean | undefined }
+let requestSequence = 0
 const loading = ref(true)
 const error = ref<ApiError | null>(null)
 const search = ref('')
@@ -31,21 +28,23 @@ const selected = ref<CurrentUser | null>(null)
 const createForm = ref({ username: '', password: '', confirm: '' })
 const createFieldErrors = ref<Record<string, string>>({})
 const resetForm = ref({ password: '', confirm: '' })
-const filtered = computed(() =>
-  users.value.filter(
-    (user) =>
-      (!search.value || user.username.toLowerCase().includes(search.value.toLowerCase())) &&
-      (!status.value || (status.value === 'active' ? user.is_active : !user.is_active)),
-  ),
-)
 async function load() {
+  const sequence = ++requestSequence
   loading.value = true
   error.value = null
   try {
-    const [loadedUsers, summary] = await Promise.all([listUsers(), getAdminSummary()])
-    users.value = loadedUsers
-    maxUsers.value = summary.max_users
+    const result = await listUsers({ ...applied, page: page.value, page_size: pageSize.value })
+    if (sequence !== requestSequence) return
+    total.value = result.total
+    const lastPage = Math.max(1, Math.ceil(result.total / pageSize.value))
+    if (page.value > lastPage) {
+      page.value = lastPage
+      await load()
+      return
+    }
+    users.value = result.items
   } catch (cause) {
+    if (sequence !== requestSequence) return
     error.value =
       cause instanceof ApiError
         ? cause
@@ -55,8 +54,20 @@ async function load() {
             message: '无法连接服务器，请检查网络或服务状态。',
           })
   } finally {
-    loading.value = false
+    if (sequence === requestSequence) loading.value = false
   }
+}
+function query() {
+  applied = {
+    q: search.value.trim(),
+    is_active: status.value ? status.value === 'active' : undefined,
+  }
+  page.value = 1
+  void load()
+}
+function resize() {
+  page.value = 1
+  void load()
 }
 function openCreate() {
   createForm.value = { username: '', password: '', confirm: '' }
@@ -146,23 +157,21 @@ onMounted(load)
   <div class="page-container">
     <PageHeader title="用户管理" description="创建和维护普通账户"
       ><template #actions
-        ><el-button
-          type="primary"
-          :disabled="maxUsers !== null && users.length >= maxUsers"
-          @click="openCreate"
-          >创建普通用户</el-button
-        ></template
+        ><el-button type="primary" @click="openCreate">创建普通用户</el-button></template
       ></PageHeader
     ><el-card
       ><div class="filters">
         <el-input
           v-model="search"
+          maxlength="64"
+          @keyup.enter="query"
           clearable
           placeholder="搜索用户名"
           style="max-width: 240px"
         /><el-select v-model="status" clearable placeholder="状态" style="width: 140px"
           ><el-option label="启用" value="active" /><el-option label="停用" value="inactive"
         /></el-select>
+        <el-button type="primary" @click="query">查询</el-button>
       </div>
       <ErrorState
         v-if="error"
@@ -170,12 +179,13 @@ onMounted(load)
         :request-id="error.requestId"
         @retry="load"
       /><EmptyState
-        v-else-if="!loading && users.length === 1 && users[0]?.id === 0"
+        v-else-if="!loading && !total && !applied.q && applied.is_active === undefined"
         title="暂无普通用户"
-      /><EmptyState
-        v-else-if="!loading && !filtered.length"
-        title="暂无匹配用户"
-      /><el-table v-else v-loading="loading" :data="filtered" stripe
+      /><EmptyState v-else-if="!loading && !users.length" title="暂无匹配用户" /><el-table
+        v-else
+        v-loading="loading"
+        :data="users"
+        stripe
         ><el-table-column prop="id" label="ID" width="80" /><el-table-column
           prop="username"
           label="用户名"
@@ -208,13 +218,21 @@ onMounted(load)
                 :loading="actionId === row.id"
                 :disabled="actionId !== null"
                 @click="toggle(row)"
-                >{{
-                row.is_active ? '停用' : '启用'
-              }}</el-button></template
+                >{{ row.is_active ? '停用' : '启用' }}</el-button
+              ></template
             ></template
           ></el-table-column
         ></el-table
-      ></el-card
+      >
+      <el-pagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        :total="total"
+        :page-sizes="[20, 50, 100]"
+        layout="total, sizes, prev, pager, next"
+        @current-change="load"
+        @size-change="resize"
+      /> </el-card
     ><el-dialog v-model="createVisible" title="创建普通用户" width="min(480px, 92vw)"
       ><el-form label-position="top"
         ><el-form-item label="用户名" :error="createFieldErrors.username"

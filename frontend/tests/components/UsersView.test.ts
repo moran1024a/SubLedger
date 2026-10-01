@@ -1,12 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import UsersView from '@/views/admin/UsersView.vue'
-import {
-  createUser,
-  disableUser,
-  getAdminSummary,
-  listUsers,
-} from '@/api/users'
+import { createUser, disableUser, getAdminSummary, listUsers } from '@/api/users'
 import { ElMessageBox } from 'element-plus'
 import type { CurrentUser } from '@/types/api'
 
@@ -36,13 +31,11 @@ const normalUser: CurrentUser = {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(listUsers).mockResolvedValue([])
+  vi.mocked(listUsers).mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
   vi.mocked(getAdminSummary).mockResolvedValue({
     total_users: 2,
     active_users: 1,
     inactive_users: 0,
-    max_users: 15,
-    remaining_users: 13,
   })
   vi.mocked(createUser).mockResolvedValue(normalUser)
   vi.mocked(disableUser).mockResolvedValue(undefined)
@@ -70,7 +63,11 @@ describe('UsersView', () => {
       createForm: { username: string; password: string; confirm: string }
       submitCreate: () => Promise<void>
     }
-    Object.assign(vm.createForm, { username: ' new-user ', password: 'password', confirm: 'password' })
+    Object.assign(vm.createForm, {
+      username: ' new-user ',
+      password: 'password',
+      confirm: 'password',
+    })
 
     await vm.submitCreate()
     expect(createUser).toHaveBeenCalledWith({ username: 'new-user', password: 'password' })
@@ -92,7 +89,9 @@ describe('UsersView', () => {
       },
     })
     await flushPromises()
-    await (wrapper.vm as unknown as { toggle: (user: CurrentUser) => Promise<void> }).toggle(normalUser)
+    await (wrapper.vm as unknown as { toggle: (user: CurrentUser) => Promise<void> }).toggle(
+      normalUser,
+    )
 
     expect(ElMessageBox.confirm).toHaveBeenCalledWith(
       expect.stringContaining('停用期间的历史不会补处理'),
@@ -100,5 +99,31 @@ describe('UsersView', () => {
       expect.any(Object),
     )
     expect(disableUser).toHaveBeenCalledWith(1)
+  })
+})
+
+it('keeps drafts out of paginated user requests', async () => {
+  vi.mocked(listUsers).mockResolvedValue({ items: [normalUser], total: 40, page: 1, page_size: 20 })
+  const wrapper = shallowMount(UsersView)
+  await flushPromises()
+  const vm = wrapper.vm as unknown as {
+    search: string
+    status: string
+    page: number
+    query: () => void
+    load: () => Promise<void>
+  }
+  vm.search = 'member'
+  vm.status = 'active'
+  vm.query()
+  await flushPromises()
+  vm.search = 'unsubmitted'
+  vm.page = 2
+  await vm.load()
+  expect(listUsers).toHaveBeenLastCalledWith({
+    q: 'member',
+    is_active: true,
+    page: 2,
+    page_size: 20,
   })
 })

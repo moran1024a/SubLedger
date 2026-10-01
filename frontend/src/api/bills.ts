@@ -2,6 +2,8 @@ import { request } from './client'
 import type { BillOccurrencePage, BillTimeStatus } from '@/types/api'
 
 export interface BillFilters {
+  q?: string
+  sort?: 'asc' | 'desc'
   start_date?: string | null
   end_date?: string | null
   time_status?: BillTimeStatus

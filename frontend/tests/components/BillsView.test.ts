@@ -1,16 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import BillsView from '@/views/bills/BillsView.vue'
 import { listBills, updateBillValidity } from '@/api/bills'
 import { listPlans } from '@/api/plans'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { ApiError, type BillOccurrence, type BillOccurrencePage } from '@/types/api'
 
 vi.mock('@/api/bills', () => ({ listBills: vi.fn(), updateBillValidity: vi.fn() }))
 vi.mock('@/api/plans', () => ({ listPlans: vi.fn() }))
 vi.mock('element-plus', () => ({
-  ElMessage: { success: vi.fn(), error: vi.fn() },
+  ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
   ElMessageBox: { confirm: vi.fn() },
 }))
 
@@ -32,8 +33,13 @@ interface BillsVm {
   page: number
   loading: boolean
   error: ApiError | null
-  start: string | null
-  end: string | null
+  dateRange: string[] | null
+  keyword: string
+  timeStatus: 'upcoming' | 'passed' | 'all'
+  query: () => void
+  reset: () => void
+  changeStatus: () => void
+  navigate: () => Promise<void>
   load: () => Promise<void>
 }
 
@@ -47,13 +53,24 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+let router: Router
+
 function mountView() {
   return shallowMount(BillsView, {
-    global: { stubs: { PageHeader: true, LoadingBlock: true, ErrorState: true, EmptyState: true } },
+    global: {
+      plugins: [router],
+      stubs: { PageHeader: true, LoadingBlock: true, ErrorState: true, EmptyState: true },
+    },
   })
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/bills', component: { template: '<div />' } }],
+  })
+  await router.push('/bills')
+  await router.isReady()
   setActivePinia(createPinia())
   vi.clearAllMocks()
   vi.mocked(listPlans).mockResolvedValue([])
@@ -67,12 +84,12 @@ describe('BillsView', () => {
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as unknown as BillsVm
-    vm.start = null
-    vm.end = null
-    await vm.load()
+    vm.dateRange = null
+    vm.query()
+    await flushPromises()
 
     expect(listBills).toHaveBeenLastCalledWith(
-      expect.objectContaining({ start_date: null, end_date: null }),
+      expect.objectContaining({ start_date: '', end_date: '' }),
     )
   })
 
@@ -151,6 +168,7 @@ describe('BillsView', () => {
   it('uses the bill response cycle data and confirms invalidation', async () => {
     const wrapper = shallowMount(BillsView, {
       global: {
+        plugins: [router],
         stubs: { PageHeader: true, LoadingBlock: true, ErrorState: true, EmptyState: true },
       },
     })
@@ -168,5 +186,81 @@ describe('BillsView', () => {
       expect.any(Object),
     )
     expect(updateBillValidity).toHaveBeenCalledWith(3, false)
+  })
+})
+
+describe('bill query interactions', () => {
+  it('starts with upcoming even when rule choices are still pending', async () => {
+    vi.mocked(listPlans).mockReturnValue(new Promise(() => {}))
+    const wrapper = mountView()
+    await flushPromises()
+    expect(listBills).toHaveBeenCalledWith(
+      expect.objectContaining({ time_status: 'upcoming', sort: 'asc' }),
+    )
+    wrapper.unmount()
+  })
+
+  it('keeps draft filters out of pagination and restores submitted conditions from URL', async () => {
+    vi.mocked(listBills).mockResolvedValue({ items: [bill], total: 60, page: 1, page_size: 20 })
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as BillsVm
+    vm.keyword = 'cloud'
+    vm.query()
+    await flushPromises()
+    expect(router.currentRoute.value.query.q).toBe('cloud')
+    vm.keyword = 'not submitted'
+    vm.page = 2
+    await vm.navigate()
+    await flushPromises()
+    expect(listBills).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'cloud', page: 2 }))
+    expect(vm.keyword).toBe('cloud')
+    wrapper.unmount()
+    mountView()
+    await flushPromises()
+    expect(listBills).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'cloud', page: 2 }))
+  })
+
+  it('switches history to descending and reset clears even an unsubmitted draft', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as BillsVm
+    vm.timeStatus = 'passed'
+    vm.changeStatus()
+    await flushPromises()
+    expect(listBills).toHaveBeenLastCalledWith(
+      expect.objectContaining({ time_status: 'passed', sort: 'desc' }),
+    )
+    vm.reset()
+    await flushPromises()
+    vm.keyword = 'draft'
+    vm.reset()
+    await flushPromises()
+    expect(vm.keyword).toBe('')
+    expect(listBills).toHaveBeenLastCalledWith(
+      expect.objectContaining({ time_status: 'upcoming', sort: 'asc', q: '' }),
+    )
+  })
+
+  it('rejects inverted dates without querying', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    vi.mocked(listBills).mockClear()
+    const vm = wrapper.vm as unknown as BillsVm
+    vm.dateRange = ['2026-10-02', '2026-10-01']
+    vm.query()
+    await flushPromises()
+    expect(listBills).not.toHaveBeenCalled()
+    expect(ElMessage.error).toHaveBeenCalled()
+  })
+
+  it('returns to the last valid page and updates the URL', async () => {
+    await router.push('/bills?time_status=passed&page=3')
+    vi.mocked(listBills).mockResolvedValue({ items: [], total: 21, page: 3, page_size: 20 })
+    const wrapper = mountView()
+    await flushPromises()
+    expect((wrapper.vm as unknown as BillsVm).page).toBe(2)
+    expect(router.currentRoute.value.query.page).toBe('2')
+    expect(listBills).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, sort: 'desc' }))
   })
 })

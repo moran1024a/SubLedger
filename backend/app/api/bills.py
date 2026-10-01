@@ -55,7 +55,21 @@ def _locked_owned_bill(db: Session, user_id: int, bill_id: int) -> tuple[BillOcc
 
 
 @router.get("", response_model=BillOccurrencePage)
-def list_bills(start_date: date | None = None, end_date: date | None = None, time_status: str | None = Query(default=None, pattern="^(upcoming|passed)$"), is_valid: bool | None = None, plan_id: int | None = None, page: int = Query(default=1, ge=1), page_size: int = Query(default=20, ge=1, le=200), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_bills(
+    q: str | None = Query(default=None, max_length=128),
+    sort: str = Query(default="asc", pattern="^(asc|desc)$"),
+    start_date: date | None = None,
+    end_date: date | None = None,
+    time_status: str | None = Query(default=None, pattern="^(upcoming|passed)$"),
+    is_valid: bool | None = None,
+    plan_id: int | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if start_date is not None and end_date is not None and start_date > end_date:
+        raise AppError("INVALID_DATE_RANGE", "开始日期不能晚于结束日期", 400)
     today = local_today(user.timezone)
     filters = [BillOccurrence.user_id == user.id]
     if start_date is not None:
@@ -70,12 +84,22 @@ def list_bills(start_date: date | None = None, end_date: date | None = None, tim
         filters.append(BillOccurrence.is_valid == is_valid)
     if plan_id is not None:
         filters.append(BillOccurrence.plan_id == plan_id)
-    total = db.scalar(select(func.count(BillOccurrence.id)).where(*filters)) or 0
+    if q and q.strip():
+        filters.append(BillPlan.name.icontains(q.strip(), autoescape=True))
+    count_query = select(func.count(BillOccurrence.id))
+    if q and q.strip():
+        count_query = count_query.join(BillPlan)
+    total = db.scalar(count_query.where(*filters)) or 0
+    ordering = (
+        (BillOccurrence.due_date.desc(), BillOccurrence.id.desc())
+        if sort == "desc"
+        else (BillOccurrence.due_date.asc(), BillOccurrence.id.asc())
+    )
     query = (
         select(BillOccurrence, BillPlan)
         .join(BillPlan)
         .where(*filters)
-        .order_by(BillOccurrence.due_date, BillOccurrence.id)
+        .order_by(*ordering)
         .offset((page - 1) * page_size)
         .limit(page_size)
     )

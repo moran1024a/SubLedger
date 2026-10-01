@@ -17,6 +17,8 @@ const elementComponents = [
   'el-input-number',
   'el-option',
   'el-pagination',
+  'el-radio-button',
+  'el-radio-group',
   'el-result',
   'el-select',
   'el-switch',

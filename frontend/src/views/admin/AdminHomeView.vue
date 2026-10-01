@@ -57,10 +57,6 @@ onMounted(load)
         ><el-card
           ><div class="label">停用普通账户</div>
           <strong>{{ summary.inactive_users }}</strong></el-card
-        ><el-card
-          ><div class="label">剩余可创建</div>
-          <strong>{{ summary.remaining_users }}</strong
-          ><span>上限 {{ summary.max_users }}</span></el-card
         >
       </div>
       <el-alert
@@ -74,19 +70,20 @@ onMounted(load)
       <el-card class="content-card health-card"
         ><template #header>系统健康状态</template>
         <div class="health-grid">
-          <div
-            ><span>应用</span
+          <div>
+            <span>应用</span
             ><el-tag :type="health?.application === 'ok' ? 'success' : 'info'">{{
               health?.application === 'ok' ? '正常' : '未能获取'
-            }}</el-tag></div
-          >
+            }}</el-tag>
+          </div>
           <div>
             <span>数据库</span
             ><el-tag
               :type="health == null ? 'info' : health.database === 'ok' ? 'success' : 'danger'"
               >{{
-              health == null ? '未能获取' : health.database === 'ok' ? '正常' : '异常'
-            }}</el-tag>
+                health == null ? '未能获取' : health.database === 'ok' ? '正常' : '异常'
+              }}</el-tag
+            >
           </div>
           <div>
             <span>调度器</span
@@ -111,9 +108,10 @@ onMounted(load)
           </div>
           <div>
             <span>整体</span
-            ><el-tag :type="health == null ? 'info' : health.status === 'ok' ? 'success' : 'danger'">{{
-              health == null ? '未能获取' : health.status === 'ok' ? '正常' : '降级'
-            }}</el-tag>
+            ><el-tag
+              :type="health == null ? 'info' : health.status === 'ok' ? 'success' : 'danger'"
+              >{{ health == null ? '未能获取' : health.status === 'ok' ? '正常' : '降级' }}</el-tag
+            >
           </div>
         </div></el-card
       ></template
@@ -124,7 +122,7 @@ onMounted(load)
 <style scoped>
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
 }
 .card-grid strong {

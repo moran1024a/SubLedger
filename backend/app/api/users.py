@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_current_user, get_db, require_admin
 from app.errors import AppError
 from app.models import NotificationSetting, SessionRecord, User
-from app.schemas import AdminPasswordReset, AdminSummaryResponse, AdminUserCreate, AdminUserPatch, PasswordChange, UserProfilePatch, UserResponse
+from app.schemas import AdminPasswordReset, AdminSummaryResponse, AdminUserCreate, AdminUserPatch, PasswordChange, UserProfilePatch, UserResponse, UserPage
 from app.security import hash_password, verify_password
 from app.services.logging import write_user_log
 from app.services.users import create_user, revoke_all_sessions
@@ -57,19 +57,33 @@ def admin_summary(request: Request, user: User = Depends(require_admin), db: Ses
     inactive_users = db.scalar(
         select(func.count(User.id)).where(User.role == "user", User.is_active.is_(False))
     ) or 0
-    max_users = request.app.state.settings.app.max_users
     return {
         "total_users": total_users,
         "active_users": active_users,
         "inactive_users": inactive_users,
-        "max_users": max_users,
-        "remaining_users": max(0, max_users - total_users),
     }
 
 
-@router.get("/api/v1/admin/users", response_model=list[UserResponse])
-def list_users(user: User = Depends(require_admin), db: Session = Depends(get_db)):
-    return list(db.scalars(select(User).order_by(User.id)))
+@router.get("/api/v1/admin/users", response_model=UserPage)
+def list_users(
+    q: str | None = Query(default=None, max_length=64),
+    is_active: bool | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    filters = []
+    if q and q.strip():
+        filters.append(User.username.icontains(q.strip(), autoescape=True))
+    if is_active is not None:
+        filters.append(User.is_active == is_active)
+    total = db.scalar(select(func.count(User.id)).where(*filters)) or 0
+    items = db.scalars(
+        select(User).where(*filters).order_by(User.id)
+        .offset((page - 1) * page_size).limit(page_size)
+    ).all()
+    return {"items": items, "page": page, "page_size": page_size, "total": total}
 
 
 @router.post("/api/v1/admin/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)

@@ -2,16 +2,16 @@
 
 轻量的个人与小团队订阅账单管理工具，把周期账单、支出统计和到期提醒放在一起。
 
-SubLedger 面向约 3–10 人的小规模使用场景，默认最多 15 个账号（含管理员）。前端与 API 同源部署，支持直接运行、Docker Compose 和 1Panel，数据存储在部署者管理的外部 MySQL 中。
+SubLedger 按 10–20 人的小规模使用场景设计，不设账号数量配额。前端与 API 同源部署，支持直接运行、Docker Compose 和 1Panel，数据存储在部署者管理的外部 MySQL 中。
 
-**当前版本：0.1.3** · Vue 3 + TypeScript · FastAPI + SQLAlchemy · MySQL
+**当前版本：0.1.4** · Vue 3 + TypeScript · FastAPI + SQLAlchemy · MySQL
 
 [快速开始](#快速开始) · [安装与部署](#安装与部署) · [开发指南](#开发指南) · [后端与 API](backend/README.md) · [前端实现](frontend/README.md)
 
 ## 功能
 
 - **订阅与周期账单**：支持单次、月、季度、年和自定义天数周期；自定义周期范围为 1–36500 天。
-- **账单管理**：保存账单快照，按日期筛选、分页查看，调整账单有效性。
+- **账单管理**：默认查看未过账单，支持历史倒序、名称搜索、日期快捷筛选和分页；查询条件保存在 URL，可刷新或分享。
 - **支出概览**：查看今日、本月、本年支出、平均支出及下一笔账单。
 - **到期提醒**：支持 SMTP 邮件和飞书/Lark Webhook，提供提前提醒、当日提醒与测试发送。
 - **多用户管理**：管理员创建和管理账号；用户独立设置时区、币种、密码与通知渠道。
@@ -172,7 +172,7 @@ docker compose -p "$COMPOSE_PROJECT" -f docker-compose.1panel.yml exec -T backen
 | --- | --- |
 | `[database]` | 外部 MySQL 连接与连接池 |
 | `[bootstrap_admin]` | 首次启动时创建管理员；修改此处不会重置已有账号 |
-| `[app]` | 时区、会话有效期、用户数上限等 |
+| `[app]` | 时区、会话有效期等 |
 | `[scheduler]` | 账单检查、通知检查与日志清理时间 |
 | `[logging]` | 日志目录、保留天数与级别 |
 | `[security]` | 主密钥路径、Cookie 配置与 SMTP 出站限制 |
@@ -282,6 +282,14 @@ fi
 升级后验证健康接口、登录、规则、账单、统计和通知配置解密。回滚必须考虑数据库变化；不要仅替换旧代码后继续使用已经迁移或产生新业务状态的数据库。
 
 日常维护使用 `docker compose restart backend`、`stop backend`、`start backend`，并保持正确项目名及编排文件。`down` 保留命名卷，`down -v` 会删除它们。
+
+### 从 0.1.3 升级到 0.1.4
+
+本次无需数据库迁移。账户数量配额已移除，旧配置中的 `app.max_users` 不再生效，可保留或删除；性能设计目标为 10–20 人使用，仍须单实例、单 worker。
+
+前后端需要配套升级：`GET /api/v1/admin/users` 从数组改为 `{items, page, page_size, total}`，支持用户名搜索和状态筛选；管理员概览不再返回 `max_users`、`remaining_users`。自行集成 API 的客户端需同步调整。
+
+账单页默认查询未过账单（包含用户当地今天），按日期升序；已过和全部默认降序。标签切换清除日期范围，其他条件通过查询按钮或回车提交；翻页、重试和有效性操作使用已提交条件。接口不传筛选和排序参数时仍保持全部账单、日期升序，新增 `q`、`sort`，日期倒置返回 `400 INVALID_DATE_RANGE`。
 
 ### 旧版本迁移
 
@@ -414,16 +422,16 @@ SubLedger/
 从项目根目录生成发布包，版本号必须与后端、前端及 FastAPI 声明一致：
 
 ```bash
-bash scripts/build-release.sh 0.1.3
+bash scripts/build-release.sh 0.1.4
 ```
 
-输出为 `dist/subledger-0.1.3.tar.gz` 和对应的 `.sha256`。脚本按固定文件清单打包源码、文档及部署文件，排除实际配置、密钥、日志、依赖目录和构建产物；它不安装依赖或构建镜像，也不会覆盖已有的同名发布包。
+输出为 `dist/subledger-0.1.4.tar.gz` 和对应的 `.sha256`。脚本按固定文件清单打包源码、文档及部署文件，排除实际配置、密钥、日志、依赖目录和构建产物；它不安装依赖或构建镜像，也不会覆盖已有的同名发布包。
 
 下载或复制两个文件到同一目录后校验：
 
 ```bash
-sha256sum -c subledger-0.1.3.tar.gz.sha256
-tar -tzf subledger-0.1.3.tar.gz
+sha256sum -c subledger-0.1.4.tar.gz.sha256
+tar -tzf subledger-0.1.4.tar.gz
 ```
 
 校验成功后解压到新的空目录。以下示例在目标目录非空时停止：
@@ -436,7 +444,7 @@ tar -tzf subledger-0.1.3.tar.gz
     printf '目标目录非空，请使用新的空目录。\n' >&2
     exit 1
   fi
-  tar -xzf subledger-0.1.3.tar.gz --strip-components=1 -C /opt/subledger
+  tar -xzf subledger-0.1.4.tar.gz --strip-components=1 -C /opt/subledger
 )
 ```
 

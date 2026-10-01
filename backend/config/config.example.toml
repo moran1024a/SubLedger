@@ -3,7 +3,6 @@ host = "0.0.0.0"
 port = 8000
 timezone = "Asia/Shanghai"
 session_expire_days = 7
-max_users = 15
 
 [database]
 # 所有部署方式都连接用户预先准备的外部 MySQL。

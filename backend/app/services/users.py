@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, time, timezone
 
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.errors import AppError
 from app.models import NotificationSetting, SessionRecord, User
 from app.security import hash_password
 
@@ -24,9 +23,8 @@ def revoke_all_sessions(db: Session, user_id: int) -> None:
 
 def create_user(db: Session, settings, username: str, password: str, timezone_name: str, currency_code: str) -> User:
     db.execute(select(User.id).where(User.id == 0).with_for_update()).first()
-    if db.scalar(select(func.count(User.id))) >= settings.app.max_users:
-        raise AppError("USER_LIMIT_REACHED", "账户数量已达到上限", 400)
-    max_id = db.scalar(select(func.max(User.id)))
+    # Keep ID allocation serialized; a locking read avoids an older MySQL RR snapshot.
+    max_id = db.scalar(select(User.id).order_by(User.id.desc()).limit(1).with_for_update())
     user = User(
         id=(max_id or 0) + 1,
         username=username,

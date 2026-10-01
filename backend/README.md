@@ -2,7 +2,7 @@
 
 本文档是当前代码实际提供的后端技术说明与 HTTP API 权威文档，覆盖数据格式、认证方式、Schema、接口、错误码和业务语义。当在线 OpenAPI、其他需求材料与本文档存在差异时，应以当前路由、Schema 和服务实现为准。安装、部署和首次使用请参阅 [项目安装与部署](../README.md#安装与部署)。
 
-- 应用版本：`0.1.3`
+- 应用版本：`0.1.4`
 - API 前缀：`/api/v1`
 - 默认本地地址：`http://127.0.0.1:8000`
 - Docker 容器内部地址：`http://127.0.0.1:8000`
@@ -92,7 +92,7 @@ SUBLEDGER_CONFIG=/tmp/subledger-test-no-config.toml python -m pytest
 - `200 OK` 返回查询或操作结果。
 - `201 Created` 返回新建资源。
 - `204 No Content` 不返回响应体。
-- 除账单实例列表外，列表接口返回 JSON 数组且当前不分页。
+- 除账单实例和管理员用户列表外，列表接口返回 JSON 数组且当前不分页。
 - 账单实例列表使用 `page`、`page_size`，返回 `{items, page, page_size, total}`。
 - FastAPI 未匹配路由、方法不允许等框架错误可能仍使用 `{"detail": ...}`，不保证采用业务错误信封。
 
@@ -551,23 +551,25 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 
 ## 管理员用户 API
 
+`GET /api/v1/admin/summary` 返回 `total_users`（含管理员）、`active_users` 和 `inactive_users`（仅普通用户）。0.1.4 起移除配额及剩余名额字段；旧配置 `app.max_users` 会被忽略。
+
 ### `GET /api/v1/admin/users`
 
 - 权限：管理员
-- 请求参数/请求体：无
-- 成功：`200 list[UserResponse]`
-- 行为：返回管理员和普通用户，按 `id` 升序；不分页
+- Query：`q`（用户名包含搜索，忽略大小写，最多 64 字符）、`is_active`（可选布尔值）、`page`（默认 1）、`page_size`（默认 20，范围 1–100）
+- 成功：`200 {items: list[UserResponse], page, page_size, total}`
+- 行为：返回管理员和普通用户，按 `id` 升序；查询条件取交集，搜索中的 `%`、`_` 按普通字符处理
+- 兼容变化：0.1.4 起使用分页对象，旧客户端需要调整
 
 ### `POST /api/v1/admin/users`
 
 - 权限：管理员
 - 请求体：`AdminUserCreate`
 - 成功：`201 UserResponse`
-- 行为：创建启用的普通用户及默认通知配置；用户 ID 使用当前最大 ID 加 1
+- 行为：创建启用的普通用户及默认通知配置；不限制账户数量；用户 ID 使用当前最大 ID 加 1，在管理员行锁下使用当前读，防止并发创建分配重复 ID
 
 | 状态 | `code` | 条件 |
 |---:|---|---|
-| 400 | `USER_LIMIT_REACHED` | 全部账号数量达到 `[app].max_users`；管理员计入总数 |
 | 409 | `USER_USERNAME_CONFLICT` | 用户名已存在 |
 
 ### `GET /api/v1/admin/users/{user_id}`
@@ -726,10 +728,14 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 | `time_status` | string \| null | `null` | `upcoming` 或 `passed` |
 | `is_valid` | boolean \| null | `null` | 有效性筛选 |
 | `plan_id` | integer \| null | `null` | 规则 ID；其他用户的规则只会得到空结果 |
+| `q` | string \| null | `null` | 名称包含搜索，忽略大小写，最多 128 字符；通配符按普通字符处理 |
+| `sort` | string | `asc` | `asc` / `desc`，日期与 ID 同向排序 |
 | `page` | integer | `1` | `>= 1` |
 | `page_size` | integer | `20` | 1–200 |
 
-结果按 `due_date`、`id` 升序，响应为 `{items, page, page_size, total}`。`start_date > end_date` 不触发业务错误，通常返回 `items: []` 且 `total: 0`。
+结果按 `due_date`、`id` 同向排序，响应为 `{items, page, page_size, total}`。`sort` 默认为 `asc`，可设为 `desc`。`start_date > end_date` 返回 `400 INVALID_DATE_RANGE`。
+
+页面默认传入 `time_status=upcoming&sort=asc`；接口不传参数仍查询全部账单并升序排列。名称搜索关联规则当前名称，包含已删除规则保留的历史账单，仍严格限定当前用户。
 
 ### `GET /api/v1/bills/{bill_id}`
 
@@ -952,10 +958,11 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 
 ## 错误码索引
 
+账单查询新增 `400 INVALID_DATE_RANGE`：开始日期晚于结束日期。
+
 | HTTP 状态 | `code` | 含义 |
 |---:|---|---|
 | 400 | `AUTH_INVALID_PASSWORD` | 当前密码错误 |
-| 400 | `USER_LIMIT_REACHED` | 账号数达到上限 |
 | 400 | `BILL_INVALID_CYCLE` | 周期与周期天数组合不合法 |
 | 400 | `BILL_PLAN_DISABLED` | 不能恢复停用规则下当前或未来账单 |
 | 400 | `EMAIL_SETTINGS_INCOMPLETE` | 已启用的邮件配置不完整 |

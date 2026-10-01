@@ -173,3 +173,69 @@ def test_notification_rechecks_record_sent_after_snapshot(mysql_sessions, monkey
         )
         stale.commit()
     assert sent == []
+
+
+def test_parallel_account_creation_uses_current_id_after_stale_snapshot(mysql_sessions, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from app.services import users
+
+    monkeypatch.setattr(users, 'hash_password', lambda value: 'hash')
+    with mysql_sessions() as db:
+        db.add(User(id=0, username='admin', password_hash='unused', role='admin',
+                    is_active=True, timezone='UTC', currency_code='CNY', created_at=NOW, updated_at=NOW))
+        db.commit()
+    ready = Barrier(2)
+
+    def create(name):
+        with mysql_sessions() as db:
+            # Both requests authenticate before either inserts a new user.
+            db.scalar(select(User).where(User.id == 0))
+            ready.wait(timeout=10)
+            result = users.create_user(db, SimpleNamespace(), name, 'password', 'UTC', 'CNY')
+            db.commit()
+            return result.id
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(create, name) for name in ('first', 'second')]
+        assert sorted(future.result(timeout=15) for future in futures) == [1, 2]
+
+
+def test_twenty_users_with_twenty_thousand_bills(mysql_sessions, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import timedelta
+    from app.api import bills
+
+    monkeypatch.setattr(bills, 'local_today', lambda zone: TODAY)
+    with mysql_sessions() as db:
+        db.execute(User.__table__.insert(), [dict(
+            id=i, username=f'member-{i}', password_hash='hash', role='user', is_active=True,
+            timezone='UTC', currency_code='CNY', created_at=NOW, updated_at=NOW,
+        ) for i in range(1, 21)])
+        db.execute(BillPlan.__table__.insert(), [dict(
+            id=i, user_id=i, name=f'Cloud-{i}', amount=1, first_due_date=TODAY,
+            cycle_type='custom_days', cycle_days=1, is_enabled=True, created_at=NOW, updated_at=NOW,
+        ) for i in range(1, 21)])
+        db.execute(BillOccurrence.__table__.insert(), [dict(
+            user_id=i, plan_id=i, due_date=TODAY + timedelta(days=offset), amount_snapshot=1,
+            is_valid=True, invalidated_by_plan_disable=False, created_at=NOW, updated_at=NOW,
+        ) for i in range(1, 21) for offset in range(-500, 500)])
+        db.commit()
+
+    def query(user_id):
+        with mysql_sessions() as db:
+            user = SimpleNamespace(id=user_id, timezone='UTC')
+            for status, sort in [('upcoming', 'asc'), ('passed', 'desc')]:
+                result = bills.list_bills(q='Cloud', sort=sort, start_date=None, end_date=None,
+                                         time_status=status, is_valid=True, plan_id=None,
+                                         page=1, page_size=20, user=user, db=db)
+                assert result['total'] == 500
+                assert len(result['items']) == 20
+                assert all(item['plan_id'] == user_id for item in result['items'])
+                expected = TODAY if status == 'upcoming' else TODAY - timedelta(days=1)
+                assert result['items'][0]['due_date'] == expected
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = [pool.submit(query, user_id) for user_id in range(1, 21)]
+        for future in futures:
+            future.result(timeout=30)
