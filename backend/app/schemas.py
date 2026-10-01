@@ -182,14 +182,14 @@ class ValidityPatch(BaseModel):
 
 class NotificationSettingsPatch(BaseModel):
     email_enabled: bool = False
-    smtp_host: str | None = None
+    smtp_host: str | None = Field(default=None, max_length=255)
     smtp_port: int | None = Field(default=None, ge=1, le=65535)
     smtp_security: Literal["none", "starttls", "ssl"] | None = None
-    smtp_username: str | None = None
+    smtp_username: str | None = Field(default=None, max_length=255)
     smtp_password: str | None = None
-    sender_email: str | None = None
-    sender_name: str | None = None
-    recipient_email: str | None = None
+    sender_email: str | None = Field(default=None, max_length=255)
+    sender_name: str | None = Field(default=None, max_length=128)
+    recipient_email: str | None = Field(default=None, max_length=255)
     feishu_enabled: bool = False
     feishu_webhook: str | None = None
     feishu_secret: str | None = None

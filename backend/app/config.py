@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import warnings
 from dataclasses import dataclass
+from typing import get_type_hints
 
 try:
     import tomllib
@@ -127,9 +129,27 @@ def load_settings(path: str | Path | None = None) -> Settings:
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"invalid TOML configuration: {exc}") from exc
 
+    expected = {
+        "app": AppConfig,
+        "database": DatabaseConfig,
+        "scheduler": SchedulerConfig,
+        "logging": LoggingConfig,
+        "security": SecurityConfig,
+        "bootstrap_admin": BootstrapAdminConfig,
+    }
+    for section, cls in expected.items():
+        values = data.get(section, {})
+        if not isinstance(values, dict):
+            raise ConfigError(f"[{section}] must be a table")
+        for key, kind in get_type_hints(cls).items():
+            if key in values and kind in (str, int, bool) and type(values[key]) is not kind:
+                raise ConfigError(f"[{section}].{key} must be {kind.__name__}")
+    for key in ("host", "port"):
+        if key in data.get("app", {}):
+            warnings.warn(f"app.{key} is deprecated and ignored; configure the ASGI server binding instead", UserWarning, stacklevel=2)
     app = AppConfig(
-        host=str(data.get("app", {}).get("host", "0.0.0.0")),
-        port=int(data.get("app", {}).get("port", 8000)),
+        host="0.0.0.0",
+        port=8000,
         timezone=str(data.get("app", {}).get("timezone", "UTC")),
         session_expire_days=int(data.get("app", {}).get("session_expire_days", 7)),
     )
@@ -197,6 +217,10 @@ def validate_settings(settings: Settings) -> None:
         raise ConfigError("database.port must be between 1 and 65535")
     if settings.database.pool_size < 1 or settings.database.max_overflow < 0:
         raise ConfigError("database pool settings are invalid")
+    if settings.logging.level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+        raise ConfigError("logging.level is invalid")
+    if min(settings.database.pool_recycle, settings.database.pool_timeout, settings.database.connect_timeout) <= 0:
+        raise ConfigError("database timeouts must be greater than zero")
     if settings.logging.retention_days <= 0:
         raise ConfigError("logging.retention_days must be greater than zero")
     if settings.scheduler.notification_interval_seconds < 10:

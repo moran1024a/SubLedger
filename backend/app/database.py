@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Generator
 from pathlib import Path
 
 from sqlalchemy import create_engine, text
@@ -69,11 +68,3 @@ class Database:
 
     def dispose(self) -> None:
         self.engine.dispose()
-
-
-def get_db_session(database: Database) -> Generator[Session, None, None]:
-    session = database.session()
-    try:
-        yield session
-    finally:
-        session.close()

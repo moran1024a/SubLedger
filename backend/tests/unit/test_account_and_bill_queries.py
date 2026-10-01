@@ -128,7 +128,7 @@ def test_bill_invalid_queries(client, params, status):
 
 
 def test_legacy_quota_is_ignored(tmp_path):
-    template = Path('config/config.example.toml').read_text()
+    template = (Path(__file__).resolve().parents[2] / 'config/config.example.toml').read_text()
     config = tmp_path / 'config.toml'
     config.write_text(template.replace('[app]', '[app]\nmax_users = 1'))
     settings = load_settings(config)

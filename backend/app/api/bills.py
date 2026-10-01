@@ -25,6 +25,7 @@ def _owned_bill(db: Session, user_id: int, bill_id: int) -> tuple[BillOccurrence
 
 
 def _locked_owned_bill(db: Session, user_id: int, bill_id: int) -> tuple[BillOccurrence, BillPlan]:
+    db.execute(select(User.id).where(User.id == user_id).with_for_update(read=True)).first()
     plan_id = db.scalar(
         select(BillOccurrence.plan_id).where(
             BillOccurrence.id == bill_id,

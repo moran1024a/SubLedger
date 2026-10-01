@@ -8,6 +8,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
+_LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
 _SENSITIVE_KEYS = re.compile(r"password|token|cookie|webhook|secret|authorization", re.IGNORECASE)
 
 
@@ -19,7 +20,10 @@ def _sanitize(value):
     return value
 
 
-def _write(directory: str, scope: str, user_id: int | None, level: str, module: str, event: str, request_id: str | None, message: str, data: dict | None) -> None:
+def _write(settings, scope: str, user_id: int | None, level: str, module: str, event: str, request_id: str | None, message: str, data: dict | None, result: str | None = None) -> None:
+    if _LEVELS[level] < _LEVELS[getattr(settings.logging, "level", "INFO")]:
+        return
+    directory = settings.logging.directory
     now = datetime.now(timezone.utc)
     if scope == "system":
         target = Path(directory) / "system"
@@ -34,7 +38,7 @@ def _write(directory: str, scope: str, user_id: int | None, level: str, module: 
         "event": event,
         "request_id": request_id,
         "user_id": user_id,
-        "result": "failure" if level in {"ERROR", "CRITICAL"} or (data and data.get("status", 0) >= 400) else "success",
+        "result": result or ("failure" if level in {"ERROR", "CRITICAL"} or (data and data.get("status", 0) >= 400) else "success"),
         "message": message,
         "data": _sanitize(data or {}),
     }
@@ -52,12 +56,12 @@ def _write(directory: str, scope: str, user_id: int | None, level: str, module: 
             pass
 
 
-def write_system_log(settings, *, level: str, module: str, event: str, request_id: str | None, message: str, data: dict | None = None) -> None:
-    _write(settings.logging.directory, "system", None, level, module, event, request_id, message, data)
+def write_system_log(settings, *, level: str, module: str, event: str, request_id: str | None, message: str, data: dict | None = None, result: str | None = None) -> None:
+    _write(settings, "system", None, level, module, event, request_id, message, data, result)
 
 
-def write_user_log(settings, *, user_id: int, level: str, module: str, event: str, request_id: str | None, message: str, data: dict | None = None) -> None:
-    _write(settings.logging.directory, "user", user_id, level, module, event, request_id, message, data)
+def write_user_log(settings, *, user_id: int, level: str, module: str, event: str, request_id: str | None, message: str, data: dict | None = None, result: str | None = None) -> None:
+    _write(settings, "user", user_id, level, module, event, request_id, message, data, result)
 
 
 def _files(directory: str, scope: str, user_id: int | None = None) -> list[Path]:
@@ -75,7 +79,10 @@ def _files(directory: str, scope: str, user_id: int | None = None) -> list[Path]
 def list_log_files(settings, scope: str, user_id: int | None = None) -> list[dict]:
     files = []
     for path in _files(settings.logging.directory, scope, user_id):
-        stat = path.stat()
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            continue
         files.append(
             {
                 "date": path.stem,
@@ -101,9 +108,16 @@ def create_log_archive(settings, scope: str, user_id: int | None = None) -> Path
     fd, archive_name = tempfile.mkstemp(prefix="subledger-logs-", suffix=".zip")
     os.close(fd)
     archive = Path(archive_name)
-    with ZipFile(archive, "w", ZIP_DEFLATED) as zip_file:
-        for path in files:
-            zip_file.write(path, arcname=path.name)
+    try:
+        with ZipFile(archive, "w", ZIP_DEFLATED) as zip_file:
+            for path in files:
+                try:
+                    zip_file.write(path, arcname=path.name)
+                except FileNotFoundError:
+                    continue
+    except BaseException:
+        archive.unlink(missing_ok=True)
+        raise
     return archive
 
 

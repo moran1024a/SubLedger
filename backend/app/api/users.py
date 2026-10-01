@@ -7,11 +7,11 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, get_db, require_admin
 from app.errors import AppError
-from app.models import NotificationSetting, SessionRecord, User
+from app.models import User
 from app.schemas import AdminPasswordReset, AdminSummaryResponse, AdminUserCreate, AdminUserPatch, PasswordChange, UserProfilePatch, UserResponse, UserPage
 from app.security import hash_password, verify_password
 from app.services.logging import write_user_log
-from app.services.users import create_user, revoke_all_sessions
+from app.services.users import create_user, lock_user, revoke_all_sessions, update_profile_fields
 
 router = APIRouter(tags=["users"])
 
@@ -19,14 +19,10 @@ router = APIRouter(tags=["users"])
 @router.patch("/api/v1/me/profile", response_model=UserResponse)
 def update_profile(payload: UserProfilePatch, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     values = payload.model_dump(exclude_unset=True)
-    if "username" in values:
-        conflict = db.scalar(select(User).where(User.username == values["username"], User.id != user.id))
-        if conflict:
-            raise AppError("USER_USERNAME_CONFLICT", "用户名已存在", 409)
-    for key, value in values.items():
-        setattr(user, key, value.upper() if key == "currency_code" else value)
-    from datetime import datetime, timezone
-    user.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    user = lock_user(db, user.id)
+    if user is None or not user.is_active:
+        raise AppError("AUTH_INVALID_CREDENTIALS", "用户已停用", 401)
+    update_profile_fields(db, user, values)
     try:
         db.commit()
     except IntegrityError as exc:
@@ -40,7 +36,8 @@ def update_profile(payload: UserProfilePatch, request: Request, user: User = Dep
 
 @router.put("/api/v1/me/password", status_code=204)
 def change_password(payload: PasswordChange, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if not verify_password(user.password_hash, payload.current_password):
+    user = lock_user(db, user.id)
+    if user is None or not user.is_active or not verify_password(user.password_hash, payload.current_password):
         raise AppError("AUTH_INVALID_PASSWORD", "当前密码错误", 400)
     user.password_hash = hash_password(payload.new_password)
     revoke_all_sessions(db, user.id)
@@ -89,7 +86,7 @@ def list_users(
 @router.post("/api/v1/admin/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def add_user(payload: AdminUserCreate, request: Request, user: User = Depends(require_admin), db: Session = Depends(get_db)):
     try:
-        created = create_user(db, request.app.state.settings, payload.username, payload.password, payload.timezone, payload.currency_code)
+        created = create_user(db, payload.username, payload.password, payload.timezone, payload.currency_code)
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -108,16 +105,11 @@ def get_user(user_id: int, user: User = Depends(require_admin), db: Session = De
 
 @router.patch("/api/v1/admin/users/{user_id}", response_model=UserResponse)
 def patch_user(user_id: int, payload: AdminUserPatch, request: Request, user: User = Depends(require_admin), db: Session = Depends(get_db)):
-    target = db.get(User, user_id)
+    target = lock_user(db, user_id)
     if target is None or target.id == 0:
         raise AppError("USER_NOT_FOUND", "普通用户不存在", 404)
     values = payload.model_dump(exclude_unset=True, exclude={"revoke_sessions"})
-    if "username" in values and db.scalar(select(User).where(User.username == values["username"], User.id != user_id)):
-        raise AppError("USER_USERNAME_CONFLICT", "用户名已存在", 409)
-    for key, value in values.items():
-        setattr(target, key, value.upper() if key == "currency_code" else value)
-    from datetime import datetime, timezone
-    target.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    update_profile_fields(db, target, values)
     if payload.revoke_sessions:
         revoke_all_sessions(db, target.id)
     try:
@@ -133,7 +125,7 @@ def patch_user(user_id: int, payload: AdminUserPatch, request: Request, user: Us
 
 @router.put("/api/v1/admin/users/{user_id}/password", status_code=204)
 def reset_password(user_id: int, payload: AdminPasswordReset, request: Request, user: User = Depends(require_admin), db: Session = Depends(get_db)):
-    target = db.get(User, user_id)
+    target = lock_user(db, user_id)
     if target is None or target.id == 0:
         raise AppError("USER_NOT_FOUND", "普通用户不存在", 404)
     target.password_hash = hash_password(payload.password)
@@ -144,7 +136,7 @@ def reset_password(user_id: int, payload: AdminPasswordReset, request: Request, 
 
 @router.post("/api/v1/admin/users/{user_id}/disable", status_code=204)
 def disable_user(user_id: int, request: Request, user: User = Depends(require_admin), db: Session = Depends(get_db)):
-    target = db.get(User, user_id)
+    target = lock_user(db, user_id)
     if target is None or target.id == 0:
         raise AppError("USER_NOT_FOUND", "普通用户不存在", 404)
     target.is_active = False
@@ -155,7 +147,7 @@ def disable_user(user_id: int, request: Request, user: User = Depends(require_ad
 
 @router.post("/api/v1/admin/users/{user_id}/enable", response_model=UserResponse)
 def enable_user(user_id: int, request: Request, user: User = Depends(require_admin), db: Session = Depends(get_db)):
-    target = db.get(User, user_id)
+    target = lock_user(db, user_id)
     if target is None or target.id == 0:
         raise AppError("USER_NOT_FOUND", "普通用户不存在", 404)
     target.is_active = True

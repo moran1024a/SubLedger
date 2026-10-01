@@ -1,7 +1,7 @@
 """Opt-in real MySQL tests; each test owns a newly created disposable database."""
 
 import os
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
@@ -12,7 +12,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from app.api.bills import _locked_owned_bill
-from app.models import Base, BillOccurrence, BillPlan, NotificationRecord, User
+from app.models import Base, BillOccurrence, BillPlan, NotificationRecord, NotificationSetting, User
 from app.services import notifications
 from app.services.billing import disable_plan, enable_plan, ensure_plan_occurrences, update_plan
 
@@ -55,6 +55,7 @@ def seed(factory, *, enabled=True, with_bill=False):
             timezone="UTC", currency_code="CNY", created_at=NOW, updated_at=NOW,
         ))
         db.flush()
+        db.add(NotificationSetting(user_id=1, email_enabled=True, same_day_enabled=True, same_day_time=time(0), advance_time=time(9), updated_at=NOW))
         plan = BillPlan(
             user_id=1, name="test", amount=Decimal("1.00"), first_due_date=TODAY,
             cycle_type="monthly", is_enabled=enabled, created_at=NOW, updated_at=NOW,
@@ -168,7 +169,7 @@ def test_notification_rechecks_record_sent_after_snapshot(mysql_sessions, monkey
             other.commit()
         notifications._attempt_notification(
             stale, SimpleNamespace(logging=SimpleNamespace(directory=str(tmp_path / "logs"))),
-            None, SimpleNamespace(smtp_password_encrypted=None), plan, None,
+            None, plan,
             TODAY, "email", "same_day", NOW,
         )
         stale.commit()
@@ -192,7 +193,7 @@ def test_parallel_account_creation_uses_current_id_after_stale_snapshot(mysql_se
             # Both requests authenticate before either inserts a new user.
             db.scalar(select(User).where(User.id == 0))
             ready.wait(timeout=10)
-            result = users.create_user(db, SimpleNamespace(), name, 'password', 'UTC', 'CNY')
+            result = users.create_user(db, name, 'password', 'UTC', 'CNY')
             db.commit()
             return result.id
 
@@ -239,3 +240,86 @@ def test_twenty_users_with_twenty_thousand_bills(mysql_sessions, monkeypatch):
         futures = [pool.submit(query, user_id) for user_id in range(1, 21)]
         for future in futures:
             future.result(timeout=30)
+
+@pytest.mark.parametrize('operation', ['reset_password', 'disable_user'])
+def test_login_rechecks_credentials_after_admin_change(mysql_sessions, monkeypatch, tmp_path, operation):
+    from app.api import users as api
+    from app.errors import AppError
+    from app.schemas import AdminPasswordReset
+    from app.security import LoginFailureLimiter
+    from app.services.auth import authenticate_user, create_session
+    seed(mysql_sessions)
+    monkeypatch.setattr('app.services.auth.verify_password', lambda hashed, plain: hashed == plain)
+    monkeypatch.setattr(api, 'hash_password', lambda value: value)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(settings=SimpleNamespace(logging=SimpleNamespace(directory=str(tmp_path))))), state=SimpleNamespace(request_id='test'))
+    with mysql_sessions() as stale:
+        user = authenticate_user(stale, 'test', 'unused', LoginFailureLimiter())
+        with mysql_sessions() as admin:
+            if operation == 'reset_password':
+                api.reset_password(1, AdminPasswordReset(password='new-password'), request, SimpleNamespace(id=0), admin)
+            else:
+                api.disable_user(1, request, SimpleNamespace(id=0), admin)
+        with pytest.raises(AppError, match='用户名或密码错误'):
+            create_session(stale, user, 7)
+
+
+def test_reset_waits_for_login_then_revokes_its_session(mysql_sessions, monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from app.api import users as api
+    from app.models import SessionRecord
+    from app.schemas import AdminPasswordReset
+    from app.services.auth import create_session
+    seed(mysql_sessions)
+    monkeypatch.setattr(api, 'hash_password', lambda value: value)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(settings=SimpleNamespace(logging=SimpleNamespace(directory=str(tmp_path))))), state=SimpleNamespace(request_id='test'))
+    started = Event()
+    def reset():
+        with mysql_sessions() as db:
+            started.set()
+            api.reset_password(1, AdminPasswordReset(password='new-password'), request, SimpleNamespace(id=0), db)
+    with mysql_sessions() as login, ThreadPoolExecutor(max_workers=1) as pool:
+        create_session(login, login.get(User, 1), 7)
+        job = pool.submit(reset)
+        assert started.wait(5)
+        login.commit()
+        job.result(timeout=10)
+    with mysql_sessions() as db:
+        assert all(record.revoked_at is not None for record in db.scalars(select(SessionRecord)))
+        assert db.scalar(select(func.count(SessionRecord.id))) == 1
+
+
+def test_summary_uses_three_queries_and_preserves_totals(mysql_sessions, monkeypatch):
+    from sqlalchemy import event
+    from app.services import statistics
+    plan_id, _ = seed(mysql_sessions, with_bill=True)
+    monkeypatch.setattr(statistics, 'local_today', lambda zone: TODAY)
+    with mysql_sessions() as db:
+        user = db.get(User, 1)
+        queries = []
+        engine = db.get_bind()
+        def track(connection, cursor, statement, parameters, context, many):
+            if statement.lstrip().upper().startswith('SELECT'):
+                queries.append(statement)
+        event.listen(engine, 'before_cursor_execute', track)
+        try:
+            result = statistics.summary(db, user)
+        finally:
+            event.remove(engine, 'before_cursor_execute', track)
+        assert len(queries) == 3
+        assert result['today'] == {'amount': '1.00', 'count': 1}
+        assert result['current_year'] == {'amount': '4.00', 'count': 4}
+
+
+def test_bill_completion_locks_user_before_child_inserts(mysql_sessions):
+    from sqlalchemy.exc import OperationalError
+    plan_id, _ = seed(mysql_sessions)
+    with mysql_sessions() as billing:
+        ensure_plan_occurrences(billing, billing.get(BillPlan, plan_id), TODAY)
+        # The new occurrences have not been flushed yet. A User lock must
+        # already protect the transaction before acquiring any child FK lock.
+        with mysql_sessions() as changing_user:
+            with pytest.raises(OperationalError) as caught:
+                changing_user.scalar(select(User).where(User.id == 1).with_for_update(nowait=True))
+            assert caught.value.orig.args[0] == 3572
+        billing.commit()

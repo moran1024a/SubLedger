@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, get_db
@@ -11,7 +12,7 @@ from app.security import decrypt_secret, encrypt_secret
 from app.services.logging import write_user_log
 from app.services.notifications import send_test_email, send_test_feishu
 from app.services.outbound import resolve_smtp_target, validate_feishu_webhook
-from app.services.users import utc_now
+from app.services.users import lock_user, utc_now
 
 router = APIRouter(prefix="/api/v1/me/notification-settings", tags=["notifications"])
 
@@ -41,7 +42,12 @@ def get_settings(user: User = Depends(get_current_user), db: Session = Depends(g
 
 @router.put("", response_model=NotificationSettingsResponse)
 def put_settings(payload: NotificationSettingsPatch, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    setting = _settings(db, user.id)
+    current = lock_user(db, user.id)
+    if current is None or not current.is_active:
+        raise AppError("AUTH_INVALID_CREDENTIALS", "用户已停用", 401)
+    setting = db.scalar(select(NotificationSetting).where(NotificationSetting.user_id == user.id).with_for_update().execution_options(populate_existing=True))
+    if setting is None:
+        raise AppError("NOTIFICATION_SETTINGS_NOT_FOUND", "通知配置不存在", 404)
     previous_smtp_target = (setting.smtp_host, setting.smtp_port)
     values = payload.model_dump(exclude_unset=True, exclude={"smtp_password", "feishu_webhook", "feishu_secret"})
     for key, value in values.items():

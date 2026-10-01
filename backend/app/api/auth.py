@@ -6,10 +6,12 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, get_db
 from app.errors import AppError
-from app.models import SessionRecord, User
+from app.models import User
 from app.schemas import LoginRequest, UserResponse
 from app.services.auth import authenticate_user, create_session, revoke_session
 from app.services.logging import write_system_log, write_user_log
+
+from app.services.users import lock_user
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -25,6 +27,7 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
             request.app.state.login_limiter,
             client_key,
         )
+        token = create_session(db, user, request.app.state.settings.app.session_expire_days)
     except AppError as exc:
         known_user = db.scalar(select(User).where(User.username == payload.username))
         if known_user is not None:
@@ -34,6 +37,7 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
                 level="WARNING",
                 module="auth",
                 event="login_failed",
+                result="failure",
                 request_id=request.state.request_id,
                 message="登录失败",
                 data={"reason": exc.code},
@@ -44,12 +48,12 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
                 level="WARNING",
                 module="auth",
                 event="login_failed",
+                result="failure",
                 request_id=request.state.request_id,
                 message="登录失败",
                 data={"reason": exc.code},
             )
         raise
-    token = create_session(db, user, request.app.state.settings.app.session_expire_days)
     db.commit()
     response.set_cookie(
         key=request.app.state.settings.security.cookie_name,
@@ -75,6 +79,7 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
 @router.post("/logout", status_code=204)
 def logout(request: Request, response: Response, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     token = request.cookies.get(request.app.state.settings.security.cookie_name)
+    lock_user(db, user.id)
     revoke_session(db, token)
     db.commit()
     response.delete_cookie(request.app.state.settings.security.cookie_name, path="/")

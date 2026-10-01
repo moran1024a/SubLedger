@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.errors import AppError
 from app.models import SessionRecord, User
 from app.security import LoginFailureLimiter, generate_session_token, hash_session_token, verify_password
-from app.services.users import utc_now
+from app.services.users import lock_user, utc_now
 
 
 _DUMMY_PASSWORD_HASH = "$argon2id$v=19$m=65536,t=3,p=4$2HY0bhCgQBLiXLicTPK/rQ$5/5mIwE9UJDnvqNKrd+xsjBYG92QLGt91TaK3X+MTu8"
@@ -42,6 +42,10 @@ def authenticate_user(
 
 
 def create_session(db: Session, user: User, expire_days: int) -> str:
+    expected_hash = user.password_hash
+    user = lock_user(db, user.id)
+    if user is None or not user.is_active or user.password_hash != expected_hash:
+        raise AppError("AUTH_INVALID_CREDENTIALS", "用户名或密码错误", 401)
     token = generate_session_token()
     now = utc_now()
     db.add(
@@ -58,7 +62,7 @@ def create_session(db: Session, user: User, expire_days: int) -> str:
 
 def revoke_session(db: Session, token: str) -> None:
     session_record = db.scalar(
-        select(SessionRecord).where(SessionRecord.token_hash == hash_session_token(token))
+        select(SessionRecord).where(SessionRecord.token_hash == hash_session_token(token)).with_for_update().execution_options(populate_existing=True)
     )
     if session_record is not None:
         session_record.revoked_at = utc_now()

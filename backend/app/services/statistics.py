@@ -17,13 +17,13 @@ def money(value: Decimal) -> str:
     return f"{value.quantize(TWOPLACES, rounding=ROUND_HALF_UP):.2f}"
 
 
-def _range_totals(db: Session, user_id: int, start: date, end: date, infer_from: date) -> tuple[Decimal, int]:
-    plans = list(db.scalars(select(BillPlan).where(BillPlan.user_id == user_id, BillPlan.deleted_at.is_(None))))
-    rows = list(db.scalars(select(BillOccurrence).where(BillOccurrence.user_id == user_id, BillOccurrence.due_date >= start, BillOccurrence.due_date <= end)))
+def _range_totals(plans: list[BillPlan], rows: list[BillOccurrence], start: date, end: date, infer_from: date) -> tuple[Decimal, int]:
     total = Decimal("0")
     count = 0
     existing: set[tuple[int, date]] = set()
     for occurrence in rows:
+        if not start <= occurrence.due_date <= end:
+            continue
         existing.add((occurrence.plan_id, occurrence.due_date))
         if occurrence.is_valid:
             total += Decimal(occurrence.amount_snapshot)
@@ -45,13 +45,16 @@ def summary(db: Session, user: User) -> dict:
     month_end = today.replace(day=monthrange(today.year, today.month)[1])
     year_start = date(today.year, 1, 1)
     year_end = date(today.year, 12, 31)
-    today_total, today_count = _range_totals(db, user.id, today, today, today)
-    month_total, month_count = _range_totals(db, user.id, month_start, month_end, today)
-    year_total, year_count = _range_totals(db, user.id, year_start, year_end, today)
+    plans = list(db.scalars(select(BillPlan).where(BillPlan.user_id == user.id, BillPlan.deleted_at.is_(None))))
+    rows = list(db.scalars(select(BillOccurrence).where(BillOccurrence.user_id == user.id, BillOccurrence.due_date >= year_start, BillOccurrence.due_date <= year_end)))
+    today_total, today_count = _range_totals(plans, rows, today, today, today)
+    month_total, month_count = _range_totals(plans, rows, month_start, month_end, today)
+    year_total, year_count = _range_totals(plans, rows, year_start, year_end, today)
     monthly_average = Decimal("0")
     daily_average = Decimal("0")
-    plans = db.scalars(select(BillPlan).where(BillPlan.user_id == user.id, BillPlan.is_enabled.is_(True), BillPlan.deleted_at.is_(None), BillPlan.cycle_type != "once"))
     for plan in plans:
+        if not plan.is_enabled or plan.cycle_type == "once":
+            continue
         amount = Decimal(plan.amount)
         if plan.cycle_type == "monthly":
             monthly_average += amount

@@ -56,7 +56,7 @@ class Scheduler:
         try:
             from app.services.billing import complete_all_active_plans
 
-            complete_all_active_plans(self.database, self.settings)
+            complete_all_active_plans(self.database)
         except Exception as exc:
             write_system_log(self.settings, level="ERROR", module="scheduler", event="bill_completion_failed", request_id=None, message="账单补全任务失败", data={"error_type": type(exc).__name__})
 

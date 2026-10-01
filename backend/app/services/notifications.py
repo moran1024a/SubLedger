@@ -26,7 +26,7 @@ from app.services.outbound import (
     resolve_smtp_target,
     validate_feishu_webhook,
 )
-from app.services.users import utc_now
+from app.services.users import lock_user, utc_now
 
 
 class _SMTP(smtplib.SMTP):
@@ -182,7 +182,7 @@ def check_notifications(database, settings, fernet) -> None:
                                 channels.append("feishu")
                             for channel in channels:
                                 _attempt_notification(
-                                    db, settings, fernet, setting, plan, None,
+                                    db, settings, fernet, plan,
                                     due_date, channel, reminder_type,
                                     scheduled_local.astimezone(timezone.utc).replace(tzinfo=None),
                                 )
@@ -210,7 +210,20 @@ def _log_check_failure(settings, user_id, plan_id, exc) -> None:
         pass
 
 
-def _attempt_notification(db, settings, fernet, setting, plan, occurrence, due_date, channel, reminder_type, scheduled_at) -> None:
+def _attempt_notification(db, settings, fernet, plan, due_date, channel, reminder_type, scheduled_at) -> None:
+    user = lock_user(db, plan.user_id)
+    setting = db.scalar(select(NotificationSetting).where(NotificationSetting.user_id == plan.user_id).with_for_update().execution_options(populate_existing=True))
+    if user is None or not user.is_active or setting is None:
+        return
+    if channel not in {"email", "feishu"} or not getattr(setting, f"{channel}_enabled"):
+        return
+    if reminder_type not in {"advance", "same_day"} or not getattr(setting, f"{reminder_type}_enabled"):
+        return
+    days = setting.advance_days if reminder_type == "advance" else 0
+    reminder_time = setting.advance_time if reminder_type == "advance" else setting.same_day_time
+    expected = datetime.combine(due_date - timedelta(days=days), reminder_time, tzinfo=ZoneInfo(user.timezone)).astimezone(timezone.utc).replace(tzinfo=None)
+    if scheduled_at != expected:
+        return
     plan = db.scalar(
         select(BillPlan)
         .where(BillPlan.id == plan.id)
@@ -283,4 +296,3 @@ def _attempt_notification(db, settings, fernet, setting, plan, occurrence, due_d
         record.retry_count += 1
         record.error_message = error_summary
         write_system_log(settings, level="ERROR", module="notifications", event="notification_failed", request_id=None, message="通知发送失败", data={"user_id": plan.user_id, "plan_id": plan.id, "channel": channel, "error_type": error_summary})
-    db.commit()

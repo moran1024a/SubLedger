@@ -87,6 +87,9 @@ def _add_occurrence(db: Session, plan: BillPlan, due_date: date) -> BillOccurren
 
 
 def _lock_plan(db: Session, plan: BillPlan) -> BillPlan:
+    # Child inserts acquire a shared User FK lock. Acquire it before Plan,
+    # consistently with notifications and account enable/disable operations.
+    db.execute(select(User.id).where(User.id == plan.user_id).with_for_update(read=True)).first()
     db.flush()
     locked = db.scalar(
         select(BillPlan)
@@ -114,7 +117,7 @@ def ensure_plan_occurrences(db: Session, plan: BillPlan, today: date) -> list[Bi
         item.due_date: item
         for item in db.scalars(
             select(BillOccurrence)
-            .where(BillOccurrence.plan_id == plan.id)
+            .where(BillOccurrence.plan_id == plan.id, BillOccurrence.due_date == plan.first_due_date if plan.cycle_type == "once" else BillOccurrence.due_date >= today)
             .with_for_update()
             .execution_options(populate_existing=True)
         )
@@ -136,6 +139,7 @@ def ensure_plan_occurrences(db: Session, plan: BillPlan, today: date) -> list[Bi
 
 
 def create_plan(db: Session, user: User, data, today: date) -> BillPlan:
+    db.execute(select(User.id).where(User.id == user.id).with_for_update(read=True)).first()
     now = utc_now()
     plan = BillPlan(user_id=user.id, name=data.name, amount=data.amount, first_due_date=data.first_due_date, cycle_type=data.cycle_type, cycle_days=data.cycle_days, is_enabled=True, note=data.note, created_at=now, updated_at=now)
     db.add(plan)
@@ -281,7 +285,7 @@ def delete_plan(db: Session, plan: BillPlan, today: date) -> None:
     db.flush()
 
 
-def complete_all_active_plans(database, settings) -> None:
+def complete_all_active_plans(database) -> None:
     with database.session() as db:
         users = db.scalars(select(User).where(User.is_active.is_(True))).all()
         for user in users:

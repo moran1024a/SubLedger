@@ -40,7 +40,7 @@ def create_app(settings=None) -> FastAPI:
             database.dispose()
             write_system_log(settings, level="INFO", module="system", event="application_stopped", request_id=None, message="应用已停止")
 
-    app = FastAPI(title="SubLedger", version="0.1.4", lifespan=lifespan)
+    app = FastAPI(title="SubLedger", version="0.1.5", lifespan=lifespan)
     app.state.settings = settings
     app.state.database = database
     app.state.fernet = fernet

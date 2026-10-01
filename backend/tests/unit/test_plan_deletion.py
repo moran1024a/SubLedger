@@ -241,10 +241,12 @@ def test_notification_rechecks_schedule_and_bill_validity_after_lock(
     sent = []
     monkeypatch.setattr(notifications, "_send_email", lambda *args: sent.append(args))
     settings = SimpleNamespace(logging=SimpleNamespace(directory="unused"))
-    notification_setting = SimpleNamespace(smtp_password_encrypted=None)
+    from datetime import time
+    from app.models import NotificationSetting
 
     with session_factory() as db:
         _, plan = seed_plan(db)
+        db.add(NotificationSetting(user_id=plan.user_id, email_enabled=True, same_day_enabled=True, same_day_time=NOW.time(), advance_time=time(9), updated_at=NOW))
         occurrence = db.get(BillOccurrence, 101)
         db.execute(
             delete(NotificationRecord).where(
@@ -259,9 +261,7 @@ def test_notification_rechecks_schedule_and_bill_validity_after_lock(
             db,
             settings,
             None,
-            notification_setting,
             plan,
-            SimpleNamespace(id=occurrence.id, is_valid=True),
             TODAY,
             "email",
             "same_day",
@@ -284,9 +284,7 @@ def test_notification_rechecks_schedule_and_bill_validity_after_lock(
             db,
             settings,
             None,
-            notification_setting,
             plan,
-            occurrence,
             TODAY,
             "email",
             "same_day",

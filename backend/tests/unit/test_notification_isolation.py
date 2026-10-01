@@ -93,14 +93,14 @@ def test_database_rule_failure_rolls_back_without_aborting_later_notifications(n
     original = notifications._attempt_notification
     attempted = []
 
-    def failing_attempt(db, settings, fernet, setting, plan, *args):
+    def failing_attempt(db, settings, fernet, plan, *args):
         attempted.append(plan.id)
         if plan.id == 1:
             # Simulate an exception after the plan row was acquired/modified.
             plan.name = "must roll back"
             db.flush()
             raise RuntimeError("database operation failed")
-        return original(db, settings, fernet, setting, plan, *args)
+        return original(db, settings, fernet, plan, *args)
 
     monkeypatch.setattr(notifications, "_attempt_notification", failing_attempt)
     monkeypatch.setattr(notifications, "_send_email", lambda *args: None)
