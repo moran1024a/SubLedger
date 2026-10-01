@@ -9,6 +9,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
+import { confirmDiscardChanges } from '@/composables/useUnsavedChanges'
 
 const auth = useAuthStore()
 const ui = useUiStore()
@@ -41,6 +42,7 @@ function isMenuActive(path: string) {
 
 async function logout() {
   if (loggingOut.value) return
+  if (!confirmDiscardChanges()) return
   loggingOut.value = true
   try {
     await auth.logout()

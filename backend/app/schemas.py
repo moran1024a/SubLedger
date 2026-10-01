@@ -6,6 +6,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
+from app.services.cycles import normalize_cycle
 
 
 def _serialize_utc(value: datetime) -> str:
@@ -95,7 +96,7 @@ class AdminPasswordReset(BaseModel):
     password: str = Field(min_length=8, max_length=255)
 
 
-CycleType = Literal["once", "monthly", "quarterly", "yearly", "custom_days"]
+CycleType = Literal["once", "day", "week", "month", "year", "monthly", "quarterly", "yearly", "custom_days"]
 
 
 class BillPlanCreate(BaseModel):
@@ -103,11 +104,15 @@ class BillPlanCreate(BaseModel):
     amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
     first_due_date: date
     cycle_type: CycleType
+    cycle_interval: int = Field(default=1, ge=1, le=36500, strict=True)
     cycle_days: int | None = Field(default=None, ge=1, le=36500)
     note: str | None = None
 
     @model_validator(mode="after")
     def validate_cycle_days(self):
+        normalize_cycle(self.cycle_type, self.cycle_days, self.cycle_interval, validate=True)
+        if self.cycle_type in {"monthly", "quarterly", "yearly", "custom_days"} and self.cycle_interval != 1:
+            raise ValueError("legacy cycles cannot specify an interval")
         if self.cycle_type == "custom_days" and self.cycle_days is None:
             raise ValueError("cycle_days is required for custom_days")
         if self.cycle_type != "custom_days" and self.cycle_days is not None:
@@ -120,6 +125,7 @@ class BillPlanPatch(BaseModel):
     amount: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
     first_due_date: date | None = None
     cycle_type: CycleType | None = None
+    cycle_interval: int | None = Field(default=None, ge=1, le=36500, strict=True)
     cycle_days: int | None = Field(default=None, ge=1, le=36500)
     note: str | None = None
 
@@ -127,13 +133,17 @@ class BillPlanPatch(BaseModel):
     @classmethod
     def reject_null_required_fields(cls, data):
         if isinstance(data, dict):
-            for field in ("name", "amount", "first_due_date", "cycle_type"):
+            for field in ("name", "amount", "first_due_date", "cycle_type", "cycle_interval"):
                 if field in data and data[field] is None:
                     raise ValueError(f"{field} must not be null")
         return data
 
     @model_validator(mode="after")
     def validate_cycle_days(self):
+        if self.cycle_type in {"once", "day", "week", "month", "year"}:
+            normalize_cycle(self.cycle_type, self.cycle_days, self.cycle_interval or 1, validate=True)
+        if self.cycle_type in {"monthly", "quarterly", "yearly", "custom_days"} and self.cycle_interval not in {None, 1}:
+            raise ValueError("legacy cycles cannot specify an interval")
         if self.cycle_type is not None and self.cycle_type != "custom_days" and self.cycle_days is not None:
             raise ValueError("cycle_days is only allowed for custom_days")
         return self
@@ -146,6 +156,7 @@ class BillPlanResponse(BaseModel):
     amount: str
     first_due_date: date
     cycle_type: str
+    cycle_interval: int
     cycle_days: int | None
     is_enabled: bool
     note: str | None
@@ -166,6 +177,8 @@ class BillOccurrenceResponse(BaseModel):
     is_valid: bool
     time_status: Literal["upcoming", "passed"]
     cycle_type: CycleType
+    cycle_interval: int
+    plan_status: Literal["enabled", "disabled", "deleted"]
     cycle_days: int | None
 
 
@@ -181,6 +194,9 @@ class ValidityPatch(BaseModel):
 
 
 class NotificationSettingsPatch(BaseModel):
+    settings_version: str | None = Field(default=None, max_length=128)
+    email_verification_token: str | None = Field(default=None, max_length=128)
+    feishu_verification_token: str | None = Field(default=None, max_length=128)
     email_enabled: bool = False
     smtp_host: str | None = Field(default=None, max_length=255)
     smtp_port: int | None = Field(default=None, ge=1, le=65535)
@@ -201,6 +217,7 @@ class NotificationSettingsPatch(BaseModel):
 
 
 class NotificationSettingsResponse(BaseModel):
+    settings_version: str
     email_enabled: bool
     smtp_host: str | None
     smtp_port: int | None

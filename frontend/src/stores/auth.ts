@@ -2,6 +2,8 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import * as authApi from '@/api/auth'
 import { ApiError, type CurrentUser } from '@/types/api'
+import { clearPositions } from '@/utils/navigation'
+import { clearUnsavedChanges } from '@/composables/useUnsavedChanges'
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<CurrentUser | null>(null)
@@ -65,6 +67,8 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function clear() {
+    clearUnsavedChanges()
+    clearPositions()
     generation += 1
     loading.value = false
     initializationError.value = null

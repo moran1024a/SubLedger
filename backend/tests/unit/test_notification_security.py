@@ -306,7 +306,7 @@ def notification_client(tmp_path):
         db.commit()
     app = FastAPI()
     app.state.settings = SimpleNamespace(
-        security=SimpleNamespace(smtp_allowed_hosts=(), smtp_allow_private_hosts=()),
+        security=SimpleNamespace(cookie_name="session", smtp_allowed_hosts=(), smtp_allow_private_hosts=()),
         logging=SimpleNamespace(directory=str(tmp_path / "logs")),
     )
     app.state.fernet = Fernet(Fernet.generate_key())
@@ -356,10 +356,16 @@ def test_settings_accepts_official_webhook_and_explicit_private_smtp(notificatio
     client, _, app = notification_client
     monkeypatch.setattr(outbound.socket, "getaddrinfo", lambda *args, **kwargs: [address("10.0.0.8")])
     app.state.settings.security.smtp_allow_private_hosts = ("smtp.internal",)
-    response = client.put("/api/v1/me/notification-settings", json={
-        "feishu_enabled": True, "feishu_webhook": WEBHOOK,
-        "smtp_host": "smtp.internal", "smtp_port": 465,
-    })
+    monkeypatch.setattr(notifications_api, "send_test_email", lambda *args: None)
+    monkeypatch.setattr(notifications_api, "send_test_feishu", lambda *args: None)
+    payload = {"feishu_enabled": True, "feishu_webhook": WEBHOOK,
+        "smtp_host": "smtp.internal", "smtp_port": 465, "smtp_security": "ssl",
+        "sender_email": "sender@example.com", "recipient_email": "receiver@example.com"}
+    for channel in ("email", "feishu"):
+        tested = client.post(f"/api/v1/me/notification-settings/test-{channel}", json=payload)
+        assert tested.status_code == 200
+        payload[channel + "_verification_token"] = tested.json()["verification_token"]
+    response = client.put("/api/v1/me/notification-settings", json=payload)
     assert response.status_code == 200
     assert response.json()["feishu_webhook_configured"] is True
 

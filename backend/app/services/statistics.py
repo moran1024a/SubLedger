@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models import BillOccurrence, BillPlan, User
 from app.services.billing import iter_plan_dates, local_today
+from app.services.cycles import plan_cycle, cycle_step
 
 TWOPLACES = Decimal("0.01")
 
@@ -56,19 +57,14 @@ def summary(db: Session, user: User) -> dict:
         if not plan.is_enabled or plan.cycle_type == "once":
             continue
         amount = Decimal(plan.amount)
-        if plan.cycle_type == "monthly":
-            monthly_average += amount
-            daily_average += amount * Decimal(12) / Decimal(365)
-        elif plan.cycle_type == "quarterly":
-            monthly_average += amount / Decimal(3)
-            daily_average += amount * Decimal(4) / Decimal(365)
-        elif plan.cycle_type == "yearly":
-            monthly_average += amount / Decimal(12)
-            daily_average += amount / Decimal(365)
-        elif plan.cycle_type == "custom_days":
-            days = Decimal(plan.cycle_days)
-            monthly_average += amount * Decimal(365) / days / Decimal(12)
-            daily_average += amount / days
+        kind, interval = plan_cycle(plan)
+        days, months = cycle_step(kind, interval)
+        if days:
+            daily_average += amount / Decimal(days)
+            monthly_average += amount * Decimal(365) / Decimal(days) / Decimal(12)
+        else:
+            monthly_average += amount / Decimal(months)
+            daily_average += amount * Decimal(12) / Decimal(months) / Decimal(365)
     next_row = db.execute(
         select(BillOccurrence, BillPlan)
         .join(BillPlan)

@@ -2,7 +2,7 @@
 
 本文档是当前代码实际提供的后端技术说明与 HTTP API 权威文档，覆盖数据格式、认证方式、Schema、接口、错误码和业务语义。当在线 OpenAPI、其他需求材料与本文档存在差异时，应以当前路由、Schema 和服务实现为准。安装、部署和首次使用请参阅 [项目安装与部署](../README.md#安装与部署)。
 
-- 应用版本：`0.1.6`
+- 应用版本：`0.1.7`
 - API 前缀：`/api/v1`
 - 默认本地地址：`http://127.0.0.1:8000`
 - Docker 容器内部地址：`http://127.0.0.1:8000`
@@ -269,15 +269,17 @@ HTTP/1.1 422 Unprocessable Entity
 
 ### 账单规则模型
 
-`cycle_type` 支持：
+`cycle_type` 输出使用以下类型，`cycle_interval` 为严格正整数（不接受布尔值、数字字符串或小数）：
 
-| 值 | 含义 |
-|---|---|
-| `once` | 单次 |
-| `monthly` | 每月 |
-| `quarterly` | 每季度 |
-| `yearly` | 每年 |
-| `custom_days` | 每隔指定天数 |
+| 值 | 含义 | 间隔范围 |
+|---|---|---|
+| `once` | 单次 | 必须为 1 |
+| `day` | 每 N 天 | 1–36500 |
+| `week` | 每 N 周 | 1–5214 |
+| `month` | 每 N 月 | 1–1200 |
+| `year` | 每 N 年 | 1–100 |
+
+请求仍接受旧 `monthly/quarterly/yearly/custom_days`，分别转换为 `month×1/month×3/year×1/day×cycle_days`；旧类型不能同时指定非默认间隔。响应统一输出新类型，旧客户端应升级。
 
 #### `BillPlanCreate`
 
@@ -287,17 +289,18 @@ HTTP/1.1 422 Unprocessable Entity
 | `amount` | decimal | 是 | `> 0`，最多 14 位有效数字、2 位小数 |
 | `first_due_date` | date | 是 | 首次到期日 |
 | `cycle_type` | enum | 是 | 上述五种周期之一 |
-| `cycle_days` | integer \| null | 条件必填 | 1–36500；仅 `custom_days` 允许且要求提供 |
+| `cycle_interval` | integer | 否 | 默认 1，受周期单位上限约束 |
+| `cycle_days` | integer \| null | 兼容字段 | 旧 `custom_days` 请求必填，范围 1–36500；新请求省略或传 null |
 | `note` | string \| null | 否 | 备注；当前没有显式长度上限 |
 
 #### `BillPlanPatch`
 
 字段与创建模型一致，且都可以省略。补充规则：
 
-- `name`、`amount`、`first_due_date`、`cycle_type` 出现时不能为 `null`。
+- `name`、`amount`、`first_due_date`、`cycle_type`、`cycle_interval` 出现时不能为 `null`。
 - `note: null` 用于清空备注。
-- 最终周期为 `custom_days` 时必须具有 1–36500 的 `cycle_days`；请求字段越界返回 422，合并已有字段后不合法返回 `BILL_INVALID_CYCLE`。
-- 非 `custom_days` 最终会清空 `cycle_days`；为非自定义周期显式提交非空 `cycle_days` 会返回错误。
+- 请求字段不合法返回 422；合并已有字段后的周期超出该单位上限返回 `BILL_INVALID_CYCLE`。更新周期时建议同时提交单位和间隔。
+- 旧 `custom_days` 与 `cycle_days` 仍可接收；迁移后按天规则支持仅修改 `cycle_days`。新写入保存标准单位和间隔，`cycle_days` 清空。
 - 空对象 `{}` 可以提交，不会重建未来账单。
 
 #### `BillPlanResponse`
@@ -310,7 +313,8 @@ HTTP/1.1 422 Unprocessable Entity
 | `amount` | string | 两位小数字符串 |
 | `first_due_date` | date | 首次到期日 |
 | `cycle_type` | string | 周期类型 |
-| `cycle_days` | integer \| null | 自定义周期天数 |
+| `cycle_interval` | integer | 周期间隔 |
+| `cycle_days` | null | 兼容保留字段，新响应为 null |
 | `is_enabled` | boolean | 是否启用 |
 | `note` | string \| null | 备注 |
 | `created_at` | string | UTC 创建时间，ISO 8601 `Z` 格式 |
@@ -330,7 +334,9 @@ HTTP/1.1 422 Unprocessable Entity
 | `is_valid` | boolean | 是否计入统计和通知 |
 | `time_status` | `upcoming` \| `passed` | 按用户当地今天计算 |
 | `cycle_type` | string | 所属规则周期类型 |
-| `cycle_days` | integer \| null | 自定义周期天数；删除规则后仍从内部历史关联返回 |
+| `cycle_interval` | integer | 关联规则间隔，已删除规则仍可读取 |
+| `cycle_days` | null | 兼容保留字段 |
+| `plan_status` | `enabled` \| `disabled` \| `deleted` | 关联规则状态 |
 
 #### `ValidityPatch`
 
@@ -365,6 +371,9 @@ HTTP/1.1 422 Unprocessable Entity
 | `advance_time` | time | 是 | 默认 `09:00:00`，用户当地时间 |
 | `same_day_enabled` | boolean | 是 | Schema 默认 `false` |
 | `same_day_time` | time | 是 | 默认 `08:30:00`，用户当地时间 |
+| `settings_version` | string | 是 | GET 返回的版本，强烈建议携带以检测并发编辑 |
+| `email_verification_token` | string | 条件必填 | 邮件渠道修改或重新启用时提供测试凭证 |
+| `feishu_verification_token` | string | 条件必填 | 飞书渠道修改或重新启用时提供测试凭证 |
 
 敏感字段 `smtp_password`、`feishu_webhook`、`feishu_secret`：
 
@@ -383,6 +392,7 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 
 | 字段 | 类型 |
 |---|---|
+| `settings_version` | string |
 | `email_enabled` | boolean |
 | `smtp_host` | string \| null |
 | `smtp_port` | integer \| null |
@@ -477,8 +487,8 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 | 24 | GET | `/api/v1/statistics/summary` | 当前用户 | 200 |
 | 25 | GET | `/api/v1/me/notification-settings` | 当前用户 | 200 |
 | 26 | PUT | `/api/v1/me/notification-settings` | 当前用户 | 200 |
-| 27 | POST | `/api/v1/me/notification-settings/test-email` | 当前用户 | 204 |
-| 28 | POST | `/api/v1/me/notification-settings/test-feishu` | 当前用户 | 204 |
+| 27 | POST | `/api/v1/me/notification-settings/test-email` | 当前用户 | 200 / 204 |
+| 28 | POST | `/api/v1/me/notification-settings/test-feishu` | 当前用户 | 200 / 204 |
 | 29 | GET | `/api/v1/me/logs` | 当前用户 | 200 |
 | 30 | GET | `/api/v1/me/logs/download` | 当前用户 | 200 |
 | 31 | GET | `/api/v1/admin/users/{user_id}/logs` | 管理员 | 200 |
@@ -769,8 +779,8 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 ## 账单周期与实例生成规则
 
 - `once` 只有 `first_due_date` 一笔实例。
-- `custom_days` 从首次日期起，每隔 `cycle_days` 天生成。
-- `monthly`、`quarterly`、`yearly` 始终基于首次日期计算目标月份。
+- `day`、`week` 从首次日期起，每隔 N 天或 N×7 天生成。
+- `month`、`year` 始终基于首次日期计算目标月份，步长为 N 月或 N×12 月；2 年、3 年等均使用真实日历。
 - 目标月份没有首次日期对应日号时，使用该月最后一天。例如 1 月 31 日的月周期在 2 月落到 28/29 日，3 月仍回到 31 日。
 - 启用的重复规则会在实例少于两笔时补足至少两笔 `due_date >= 用户当地今天` 的实例；该逻辑不会主动删除异常存在的多余未来实例。
 - 账单实例保存金额快照，不保存名称快照。
@@ -792,7 +802,7 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 - `today`、`current_month`、`current_year` 只统计有效账单实例。
 - 对今天及未来尚未持久化的启用重复规则，服务会按规则推算金额和笔数；停用规则和 `once` 不参与推算。
 - 历史缺失实例不会通过规则反向推算。
-- `averages` 只使用启用中的非单次规则，并固定按 365 天换算，不按闰年调整。
+- `averages` 只使用启用中的非单次规则，并固定按 365 天换算，不按闰年调整。天/周规则按完整周期天数折算；月/年按 N 月或 N×12 月折算。例如每 2 年 240 元，月均 10 元，日均约 0.33 元。
 - `next_bill` 只从已持久化、有效且未过期的实例中查询，不即时推算未落库实例。
 
 ## 通知 API
@@ -812,7 +822,7 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 - 权限：当前用户
 - 请求体：`NotificationSettingsPatch`
 - 成功：`200 NotificationSettingsResponse`
-- 行为：局部更新；敏感字段加密保存，响应只返回是否已配置
+- 行为：局部更新；敏感字段加密保存，响应只返回是否已配置。修改渠道配置或重新启用前必须通过该渠道草稿测试；单独关闭渠道或仅修改提醒时间免测试。已保存版本发生变化返回 409，测试凭证无效返回 `400 NOTIFICATION_TEST_REQUIRED`。
 
 | 状态 | `code` | 条件 |
 |---:|---|---|
@@ -822,35 +832,18 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 | 400 | `FEISHU_WEBHOOK_NOT_ALLOWED` | Webhook 不是允许的官方 HTTPS 机器人地址 |
 | 404 | `NOTIFICATION_SETTINGS_NOT_FOUND` | 通知配置记录不存在 |
 
-### `POST /api/v1/me/notification-settings/test-email`
+### 草稿测试与保存
 
-- 权限：当前用户
-- 请求参数/请求体：无
-- 成功：`204 No Content`
-- 行为：使用已保存配置实际连接 SMTP 并发送测试邮件，DNS 与网络发送使用可配置的独立预算，默认 DNS 5 秒、发送阶段总计 30 秒
+`POST /api/v1/me/notification-settings/test-email` 与 `POST /api/v1/me/notification-settings/test-feishu`：
 
-| 状态 | `code` | 条件 |
-|---:|---|---|
-| 400 | `EMAIL_SETTINGS_INCOMPLETE` | 当前启用的邮件配置不完整 |
-| 400 | `FEISHU_SETTINGS_INCOMPLETE` | 当前启用的飞书配置不完整；测试前会检查所有启用渠道 |
-| 400 | `NETWORK_TIMEOUT` / `NETWORK_ERROR` / `SMTP_REJECTED` 等 | 测试发送失败，详见发送与重试语义 |
-| 404 | `NOTIFICATION_SETTINGS_NOT_FOUND` | 通知配置记录不存在 |
+- 权限：当前用户；提交 `NotificationSettingsPatch` 草稿，与已保存配置合并后只校验选定渠道。留空敏感字段应省略，沿用已保存密钥。
+- 成功：传 JSON 对象（包括 `{}`）返回 `200 {verification_token, expires_at, channel}`；不传 Body 保留旧接口的 204，仅用于测试已保存配置。
+- 行为：实际发送消息但不保存设置。DNS 和发送均不持有数据库事务/用户行锁；发送后加锁复核用户状态和已保存版本。默认 DNS 5 秒、发送总预算 30 秒。
+- 失败：配置缺失、渠道错误或 `DELIVERY_UNKNOWN` 返回 400，不签发凭证；并发配置变更返回 `409 NOTIFICATION_SETTINGS_CHANGED`；30 秒内重复测试返回 `429 NOTIFICATION_TEST_RATE_LIMITED`，4 个全局测试槽已满返回 `429 NOTIFICATION_TEST_BUSY`。
 
-测试接口不要求 `email_enabled=true`，但必须具有可用于实际发送的保存配置。
+保存时提交与测试一致的渠道字段、`settings_version` 及对应 `email_verification_token` / `feishu_verification_token`。凭证有效 600 秒，绑定用户、当前会话、渠道、配置摘要、已保存版本；配置摘要使用带随机进程密钥的 HMAC，明文密钥不持久化在凭证中。保存消费该用户凭证，重启失效；校验和行锁后的再次校验都必须通过。凭证保存在单进程内存中，部署仍只支持单 worker，最多保留 2048 条短期凭证（不是账户配额）。
 
-### `POST /api/v1/me/notification-settings/test-feishu`
-
-- 权限：当前用户
-- 请求参数/请求体：无
-- 成功：`204 No Content`
-- 行为：使用已保存 Webhook 实际发送飞书测试消息，DNS 与网络发送使用可配置的独立预算，默认 DNS 5 秒、发送阶段总计 30 秒
-
-| 状态 | `code` | 条件 |
-|---:|---|---|
-| 400 | `EMAIL_SETTINGS_INCOMPLETE` | 当前启用的邮件配置不完整；测试前会检查所有启用渠道 |
-| 400 | `FEISHU_SETTINGS_INCOMPLETE` | 当前启用的飞书配置不完整 |
-| 400 | `WEBHOOK_HTTP_ERROR` / `WEBHOOK_REJECTED` / `DELIVERY_UNKNOWN` 等 | 测试失败或结果待核实 |
-| 404 | `NOTIFICATION_SETTINGS_NOT_FOUND` | 通知配置记录不存在 |
+测试失败不修改现有配置；仅有成功凭证不能直接绕过保存时的出站限制与完整性校验。两个渠道分别测试，同次修改两个渠道需要两个凭证。SMTP 接受不保证最终入箱，结果未知应先核实接收情况；接口不自动重发测试消息。测试仅写用户操作日志，不写业务通知记录。
 
 ### 自动通知语义
 
@@ -1122,10 +1115,16 @@ DNS 在获取数据库行锁前完成，结果限制为允许的地址并绑定�
 
 最多 3 次尝试。可重试的网络连接故障、SMTP 4xx 和 Webhook HTTP 429/5xx，在上次失败后 60/300 秒具备重试资格，下一轮检查才执行；明确拒绝或配置错误停止自动重试。消息提交后连接中断或响应不可确认则标记 `unknown` 并停止自动重发；明确的 SMTP/HTTP 拒绝仍按错误类别处理。第三次失败或下一次重试跨越原提醒日期后停止自动重试。成功记录永不重发，SMTP 已接受消息后关闭连接失败不会改判失败。进程崩溃、数据库提交失败与外部渠道无法原子提交，不能提供严格只送达一次的保证。
 
-测试发送成功仍返回 204，失败返回 400，使用与记录相同的脱敏错误码；结果未知使用 `DELIVERY_UNKNOWN`，提示先核实是否收到消息。
+不传请求体的旧测试调用成功返回 204；0.1.7 草稿调用成功返回 200 和凭证。发送失败返回 400，使用与记录相同的脱敏错误码；结果未知使用 `DELIVERY_UNKNOWN`，提示先核实是否收到消息。
 
 ### 升级验证
 
 迁移 `0003_notification_attempts` 增加四个字段，并按旧 `retry_count` 推导尝试次数；已发送不变，未耗尽的失败转为待重试，旧发送中转为结果未知，缺失的历史尝试时间不伪造。回滚需恢复升级前备份。
 
 本版本的回归覆盖任务状态与权限、分批清理、DNS/发送超时、重试间隔及上限、配置变更、结果未知、查询隔离；MySQL 测试验证实际迁移、重复升级、DNS 阶段无用户锁、超时后释放锁与清理/登录并发。
+
+## 0.1.7 升级迁移
+
+`0004_general_cycles` 增加 `bill_plans.cycle_interval` 并转换旧周期；保留旧 `cycle_days` 列兼容读取，但转换后值为 null。迁移包含已删除规则，不重建或修改账单、金额快照、有效性及通知记录。迁移可重复启动检查；不支持数据降级，回滚须恢复升级前数据库备份。
+
+新增回归覆盖通用周期边界、月末和闰日、等价旧类型更新不重建、长周期均值，以及草稿测试、跨用户/会话防复用、过期/重启失效、失败与未知结果、真实本机 SMTP、真实 MySQL 迁移及发送阶段无数据库锁。

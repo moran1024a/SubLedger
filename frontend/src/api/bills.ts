@@ -1,5 +1,5 @@
 import { request } from './client'
-import type { BillOccurrencePage, BillTimeStatus } from '@/types/api'
+import type { BillOccurrence, BillOccurrencePage, BillTimeStatus } from '@/types/api'
 
 export interface BillFilters {
   q?: string
@@ -22,8 +22,12 @@ export function listBills(filters: BillFilters = {}, signal?: AbortSignal) {
 }
 
 export function updateBillValidity(id: number, isValid: boolean) {
-  return request(`/bills/${id}/validity`, {
+  return request<BillOccurrence>(`/bills/${id}/validity`, {
     method: 'PATCH',
     body: JSON.stringify({ is_valid: isValid }),
   })
+}
+
+export function getBill(id: number, signal?: AbortSignal) {
+  return request<BillOccurrence>(`/bills/${id}`, { signal })
 }

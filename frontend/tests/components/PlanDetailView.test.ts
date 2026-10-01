@@ -9,7 +9,7 @@ import { ApiError, type BillPlan } from '@/types/api'
 const replace = vi.fn()
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ params: { id: '2' } }),
+  useRoute: () => ({ params: { id: '2' }, query: {}, fullPath: '/plans/2' }),
   useRouter: () => ({ push: vi.fn(), replace }),
 }))
 vi.mock('@/api/plans', () => ({

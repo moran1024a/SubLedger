@@ -11,65 +11,54 @@ from sqlalchemy.orm import Session
 from app.errors import AppError
 from app.models import BillOccurrence, BillPlan, NotificationRecord, User
 from app.services.users import utc_now
-
-CYCLE_MONTHS = {"monthly": 1, "quarterly": 3, "yearly": 12}
-CYCLE_TYPES = {"once", "monthly", "quarterly", "yearly", "custom_days"}
-
+from app.services.cycles import normalize_cycle, plan_cycle, cycle_step
 
 def local_today(timezone_name: str) -> date:
     return utc_now().replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo(timezone_name)).date()
 
 
-def cycle_date(first_due_date: date, cycle_type: str, index: int, cycle_days: int | None = None) -> date:
+def cycle_date(first_due_date: date, cycle_type: str, index: int, cycle_days: int | None = None, cycle_interval: int = 1) -> date:
     if index < 0:
         raise ValueError("index must not be negative")
-    if cycle_type == "once":
+    kind, interval = normalize_cycle(cycle_type, cycle_days, cycle_interval)
+    if kind == "once":
         if index != 0:
             raise ValueError("once cycle has only one date")
         return first_due_date
-    if cycle_type == "custom_days":
-        if cycle_days is None or cycle_days <= 0:
-            raise ValueError("cycle_days must be greater than zero")
-        days = cycle_days * index
-        if days > (date.max - first_due_date).days:
+    days, months = cycle_step(kind, interval)
+    if days:
+        delta = days * index
+        if delta > (date.max - first_due_date).days:
             raise OverflowError("cycle date exceeds the supported date range")
-        return first_due_date + timedelta(days=days)
-    months_per_cycle = CYCLE_MONTHS.get(cycle_type)
-    if months_per_cycle is None:
-        raise ValueError("unsupported cycle type")
-    month_number = first_due_date.year * 12 + first_due_date.month - 1 + months_per_cycle * index
+        return first_due_date + timedelta(days=delta)
+    month_number = first_due_date.year * 12 + first_due_date.month - 1 + months * index
     year, month_index = divmod(month_number, 12)
     if year > date.max.year:
         raise OverflowError("cycle date exceeds the supported date range")
     month = month_index + 1
-    day = min(first_due_date.day, calendar.monthrange(year, month)[1])
-    return date(year, month, day)
+    return date(year, month, min(first_due_date.day, calendar.monthrange(year, month)[1]))
 
 
 def iter_plan_dates(plan: BillPlan, start: date, end: date):
     if end < start or end < plan.first_due_date:
         return
-    if plan.cycle_type == "once":
+    try:
+        kind, interval = plan_cycle(plan)
+    except ValueError:
+        return
+    if kind == "once":
         if start <= plan.first_due_date <= end:
             yield plan.first_due_date
         return
-    index = 0
-    if plan.cycle_type == "custom_days":
-        if plan.cycle_days is None or plan.cycle_days <= 0:
-            return
-        delta = (start - plan.first_due_date).days
-        if delta > 0:
-            index = (delta + plan.cycle_days - 1) // plan.cycle_days
+    days, months = cycle_step(kind, interval)
+    if days:
+        index = max(0, ((start - plan.first_due_date).days + days - 1) // days)
     else:
-        months_per_cycle = CYCLE_MONTHS.get(plan.cycle_type)
-        if months_per_cycle is None:
-            return
-        if start > plan.first_due_date:
-            months = (start.year - plan.first_due_date.year) * 12 + start.month - plan.first_due_date.month
-            index = max(0, months // months_per_cycle)
+        delta = (start.year - plan.first_due_date.year) * 12 + start.month - plan.first_due_date.month
+        index = max(0, delta // months)
     while True:
         try:
-            current = cycle_date(plan.first_due_date, plan.cycle_type, index, plan.cycle_days)
+            current = cycle_date(plan.first_due_date, kind, index, cycle_interval=interval)
         except (OverflowError, ValueError):
             return
         if current > end:
@@ -141,7 +130,8 @@ def ensure_plan_occurrences(db: Session, plan: BillPlan, today: date) -> list[Bi
 def create_plan(db: Session, user: User, data, today: date) -> BillPlan:
     db.execute(select(User.id).where(User.id == user.id).with_for_update(read=True)).first()
     now = utc_now()
-    plan = BillPlan(user_id=user.id, name=data.name, amount=data.amount, first_due_date=data.first_due_date, cycle_type=data.cycle_type, cycle_days=data.cycle_days, is_enabled=True, note=data.note, created_at=now, updated_at=now)
+    kind, interval = normalize_cycle(data.cycle_type, data.cycle_days, data.cycle_interval, validate=True)
+    plan = BillPlan(user_id=user.id, name=data.name, amount=data.amount, first_due_date=data.first_due_date, cycle_type=kind, cycle_interval=interval, cycle_days=None, is_enabled=True, note=data.note, created_at=now, updated_at=now)
     db.add(plan)
     db.flush()
     if plan.cycle_type != "once" and plan.first_due_date < today:
@@ -156,26 +146,20 @@ def update_plan(db: Session, plan: BillPlan, values: dict, today: date) -> bool:
     _require_live_plan(plan)
     values = values.copy()
     next_cycle = values.get("cycle_type", plan.cycle_type)
-    next_days = values.get("cycle_days", plan.cycle_days)
-    if next_cycle == "custom_days" and (next_days is None or not 1 <= next_days <= 36500):
-        raise AppError("BILL_INVALID_CYCLE", "自定义周期必须填写 1 至 36500 的天数", 400)
-    if (
-        "cycle_days" in values
-        and values["cycle_days"] is not None
-        and next_cycle != "custom_days"
-    ):
-        raise AppError("BILL_INVALID_CYCLE", "只有自定义周期可以填写周期天数", 400)
-    if next_cycle != "custom_days":
-        next_days = None
-        values["cycle_days"] = None
-    schedule_changed = any(
-        next_value != getattr(plan, field)
-        for field, next_value in (
-            ("first_due_date", values.get("first_due_date", plan.first_due_date)),
-            ("cycle_type", next_cycle),
-            ("cycle_days", next_days),
-        )
-    )
+    next_days = values.get("cycle_days", plan.cycle_days if next_cycle == "custom_days" else None)
+    interval = values.get("cycle_interval", (getattr(plan, "cycle_interval", None) or 1) if next_cycle == plan.cycle_type else 1)
+    # Legacy PATCH {cycle_days: N} remains usable for a migrated daily rule.
+    if "cycle_days" in values and values["cycle_days"] is not None and "cycle_type" not in values and next_cycle == "day":
+        interval, next_days = values["cycle_days"], None
+    try:
+        if next_days is not None and next_cycle != "custom_days":
+            raise ValueError("cycle_days only belongs to legacy custom_days")
+        kind, interval = normalize_cycle(next_cycle, next_days, interval, validate=True)
+        old_cycle = plan_cycle(plan)
+    except ValueError as exc:
+        raise AppError("BILL_INVALID_CYCLE", "周期单位或间隔无效，请检查支持的范围", 400) from exc
+    schedule_changed = old_cycle != (kind, interval) or values.get("first_due_date", plan.first_due_date) != plan.first_due_date
+    values.update(cycle_type=kind, cycle_interval=interval, cycle_days=None)
     amount_changed = "amount" in values and values["amount"] != plan.amount
     for key, value in values.items():
         setattr(plan, key, value)
@@ -297,8 +281,8 @@ def complete_all_active_plans(database) -> None:
 
 
 def plan_response(plan: BillPlan) -> dict:
-    return {"id": plan.id, "name": plan.name, "amount": f"{Decimal(plan.amount):.2f}", "first_due_date": plan.first_due_date, "cycle_type": plan.cycle_type, "cycle_days": plan.cycle_days, "is_enabled": plan.is_enabled, "note": plan.note, "created_at": plan.created_at, "updated_at": plan.updated_at}
+    return {"id": plan.id, "name": plan.name, "amount": f"{Decimal(plan.amount):.2f}", "first_due_date": plan.first_due_date, "cycle_type": plan_cycle(plan)[0], "cycle_interval": plan_cycle(plan)[1], "cycle_days": None, "is_enabled": plan.is_enabled, "note": plan.note, "created_at": plan.created_at, "updated_at": plan.updated_at}
 
 
 def occurrence_response(occurrence: BillOccurrence, plan: BillPlan, today: date) -> dict:
-    return {"id": occurrence.id, "plan_id": occurrence.plan_id, "plan_name": plan.name, "due_date": occurrence.due_date, "amount": f"{Decimal(occurrence.amount_snapshot):.2f}", "is_valid": occurrence.is_valid, "time_status": "upcoming" if occurrence.due_date >= today else "passed", "cycle_type": plan.cycle_type, "cycle_days": plan.cycle_days}
+    return {"id": occurrence.id, "plan_id": occurrence.plan_id, "plan_name": plan.name, "due_date": occurrence.due_date, "amount": f"{Decimal(occurrence.amount_snapshot):.2f}", "is_valid": occurrence.is_valid, "time_status": "upcoming" if occurrence.due_date >= today else "passed", "cycle_type": plan_cycle(plan)[0], "cycle_interval": plan_cycle(plan)[1], "cycle_days": None, "plan_status": "deleted" if getattr(plan, "deleted_at", None) else "enabled" if plan.is_enabled else "disabled"}

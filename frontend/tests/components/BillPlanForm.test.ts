@@ -16,7 +16,7 @@ describe('BillPlanForm', () => {
     const vm = wrapper.vm as unknown as {
       form: { cycle_type: string }
       rules: {
-        cycle_days: {
+        cycle_interval: {
           validator: (
             rule: unknown,
             value: number | null,
@@ -25,13 +25,13 @@ describe('BillPlanForm', () => {
         }[]
       }
     }
-    vm.form.cycle_type = 'custom_days'
-    const validator = vm.rules.cycle_days[0]!.validator
+    vm.form.cycle_type = 'day'
+    const validator = vm.rules.cycle_interval[0]!.validator
     for (const value of [1, 36500]) {
       validator({}, value, (error) => expect(error).toBeUndefined())
     }
     for (const value of [null, 0, 1.5, 36501]) {
-      validator({}, value, (error) => expect(error?.message).toBe('请输入 1 到 36500 的整数天数'))
+      validator({}, value, (error) => expect(error?.message).toBe('请输入 1 到 36500 的整数'))
     }
   })
 
@@ -58,8 +58,8 @@ describe('BillPlanForm', () => {
       name: '  云服务  ',
       amount: '12.50',
       first_due_date: '2026-07-20',
-      cycle_type: 'custom_days',
-      cycle_days: 10,
+      cycle_type: 'day',
+      cycle_interval: 10,
       note: '  生产环境  ',
     })
     await nextTick()
@@ -72,9 +72,10 @@ describe('BillPlanForm', () => {
       name: '云服务',
       amount: '12.50',
       first_due_date: '2026-07-20',
-      cycle_type: 'custom_days',
-      cycle_days: 10,
+      cycle_type: 'day',
+      cycle_interval: 10,
       note: '生产环境',
+      cycle_days: null,
     })
   })
 })

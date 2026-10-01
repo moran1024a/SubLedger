@@ -32,12 +32,21 @@ export function formatDateTime(value: string, timezone?: string): string {
   }).format(new Date(value))
 }
 
-export function formatCycle(type: CycleType, days?: number | null): string {
+export const cycleLimits = { day: 36500, week: 5214, month: 1200, year: 100 }
+export function cycleParts(type: CycleType, days?: number | null, interval = 1) {
+  if (type === 'monthly') return { type: 'month' as const, interval: 1 }
+  if (type === 'quarterly') return { type: 'month' as const, interval: 3 }
+  if (type === 'yearly') return { type: 'year' as const, interval: 1 }
+  if (type === 'custom_days') return { type: 'day' as const, interval: days ?? 1 }
+  return { type, interval }
+}
+export function formatCycle(type: CycleType, days?: number | null, interval = 1): string {
   if (type === 'once') return '单次'
   if (type === 'monthly') return '每月'
   if (type === 'quarterly') return '每季度'
   if (type === 'yearly') return '每年'
-  return `每 ${days ?? '?'} 天`
+  if (type === 'custom_days') return `每 ${days ?? '?'} 天`
+  return `每 ${interval} ${{ day: '天', week: '周', month: '个月', year: '年' }[type]}`
 }
 
 export function formatDaysRemaining(days: number): string {

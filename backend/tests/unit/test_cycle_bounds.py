@@ -220,6 +220,61 @@ def test_update_checks_custom_cycle_against_retained_days(db):
         update_plan(db, plan, {"cycle_type": "custom_days"}, TODAY)
     assert plan.cycle_type == "monthly"
     assert update_plan(db, plan, {"cycle_type": "custom_days", "cycle_days": 36500}, TODAY)
-    assert plan.cycle_days == 36500
+    assert plan.cycle_type == "day" and plan.cycle_interval == 36500
+    assert plan.cycle_days is None
     assert update_plan(db, plan, {"cycle_type": "monthly"}, TODAY)
     assert plan.cycle_days is None
+
+
+@pytest.mark.parametrize('kind, interval, first, expected', [
+    ('year', 2, date(2024, 2, 29), [date(2024, 2, 29), date(2026, 2, 28), date(2028, 2, 29)]),
+    ('year', 3, date(2024, 2, 29), [date(2024, 2, 29), date(2027, 2, 28), date(2030, 2, 28)]),
+    ('month', 2, date(2024, 7, 31), [date(2024, 7, 31), date(2024, 9, 30), date(2024, 11, 30)]),
+    ('week', 2, date(2024, 2, 20), [date(2024, 2, 20), date(2024, 3, 5), date(2024, 3, 19)]),
+    ('day', 10, date(2024, 2, 20), [date(2024, 2, 20), date(2024, 3, 1), date(2024, 3, 11)]),
+])
+def test_general_calendar_cycles(kind, interval, first, expected):
+    plan = make_plan(first, kind, None)
+    plan.cycle_interval = interval
+    assert list(iter_plan_dates(plan, first, expected[-1])) == expected
+    assert [cycle_date(first, kind, i, cycle_interval=interval) for i in range(3)] == expected
+    assert list(iter_plan_dates(plan, expected[1], expected[1])) == [expected[1]]
+
+
+@pytest.mark.parametrize('kind, limit', [('day', 36500), ('week', 5214), ('month', 1200), ('year', 100), ('once', 1)])
+def test_generic_interval_limits(kind, limit):
+    for value in (1, limit):
+        BillPlanCreate(name='test', amount=1, first_due_date=TODAY, cycle_type=kind, cycle_interval=value)
+    for value in (0, -1, limit + 1, 1.5, True, '2'):
+        with pytest.raises(ValidationError):
+            BillPlanCreate(name='test', amount=1, first_due_date=TODAY, cycle_type=kind, cycle_interval=value)
+
+
+def test_generic_create_update_statistics_and_equivalent_legacy_patch(db, monkeypatch):
+    user = seed_user(db)
+    payload = BillPlanCreate(name='two years', amount=240, first_due_date=TODAY, cycle_type='year', cycle_interval=2)
+    plan = create_plan(db, user, payload, TODAY)
+    db.flush()
+    ids = list(db.scalars(select(BillOccurrence.id)))
+    monkeypatch.setattr(statistics, 'local_today', lambda _: TODAY)
+    totals = statistics.summary(db, user)
+    assert totals['averages'] == {'monthly': '10.00', 'daily': '0.33'}
+    assert totals['current_year'] == {'amount': '240.00', 'count': 1}
+    assert not update_plan(db, plan, {'cycle_type': 'year'}, TODAY)
+    assert plan.cycle_interval == 2
+    assert not update_plan(db, plan, {'cycle_type': 'year', 'cycle_interval': 2, 'name': 'renamed'}, TODAY)
+    assert list(db.scalars(select(BillOccurrence.id))) == ids
+    assert update_plan(db, plan, {'cycle_type': 'month', 'cycle_interval': 3}, TODAY)
+    db.flush()
+    ids = list(db.scalars(select(BillOccurrence.id)))
+    assert not update_plan(db, plan, {'cycle_type': 'quarterly'}, TODAY)
+    assert list(db.scalars(select(BillOccurrence.id))) == ids
+    with pytest.raises(AppError):
+        update_plan(db, plan, {'cycle_type': 'year', 'cycle_interval': 101}, TODAY)
+
+
+@pytest.mark.parametrize('kind', ['day', 'week', 'month', 'year'])
+def test_general_cycles_stop_at_representable_date(kind):
+    plan = make_plan(date.max, kind, None)
+    plan.cycle_interval = 2
+    assert list(iter_plan_dates(plan, date.max, date.max)) == [date.max]

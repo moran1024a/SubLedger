@@ -10,11 +10,22 @@ export function saveNotificationSettings(payload: NotificationPayload) {
     body: JSON.stringify(payload),
   })
 }
-export function testEmail() {
-  return request<void>('/me/notification-settings/test-email', { method: 'POST' })
+export interface VerificationResult {
+  verification_token: string
+  expires_at: string
+  channel: 'email' | 'feishu'
 }
-export function testFeishu() {
-  return request<void>('/me/notification-settings/test-feishu', { method: 'POST' })
+export function testEmail(payload?: NotificationPayload) {
+  return request<VerificationResult>('/me/notification-settings/test-email', {
+    method: 'POST',
+    body: payload ? JSON.stringify(payload) : undefined,
+  })
+}
+export function testFeishu(payload?: NotificationPayload) {
+  return request<VerificationResult>('/me/notification-settings/test-feishu', {
+    method: 'POST',
+    body: payload ? JSON.stringify(payload) : undefined,
+  })
 }
 
 export interface NotificationFilters {

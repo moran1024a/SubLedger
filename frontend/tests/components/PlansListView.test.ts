@@ -1,3 +1,4 @@
+import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises, shallowMount } from '@vue/test-utils'
@@ -32,7 +33,14 @@ const plan: BillPlan = {
   updated_at: '',
 }
 
-beforeEach(() => {
+let router: Router
+beforeEach(async () => {
+  router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/plans', component: { template: '<div />' } }],
+  })
+  await router.push('/plans')
+  await router.isReady()
   setActivePinia(createPinia())
   vi.clearAllMocks()
   vi.mocked(listPlans).mockResolvedValue([plan])
@@ -43,7 +51,7 @@ beforeEach(() => {
 function mountView() {
   return shallowMount(PlansListView, {
     global: {
-      mocks: { $router: { push: vi.fn() } },
+      plugins: [router],
       stubs: {
         PageHeader: true,
         LoadingBlock: true,

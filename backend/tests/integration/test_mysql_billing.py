@@ -339,7 +339,7 @@ def test_016_migration_preserves_attempts_and_sent_records(mysql_sessions):
     with mysql_sessions() as db:
         db.add(User(id=1, username='migration', password_hash='unused', role='user', is_active=True, timezone='UTC', currency_code='CNY', created_at=NOW, updated_at=NOW))
         db.flush()
-        db.add(BillPlan(id=1, user_id=1, name='migration', amount=1, cycle_type='once', first_due_date=TODAY, is_enabled=True, created_at=NOW, updated_at=NOW))
+        db.execute(text("INSERT INTO bill_plans (id,user_id,name,amount,cycle_type,first_due_date,is_enabled,created_at,updated_at) VALUES (1,1,'migration',1,'once',:today,1,:now,:now)"), {'today': TODAY, 'now': NOW})
         db.flush()
         for index, (status, count) in enumerate([('sent', 2), ('failed', 1), ('sending', 0), ('failed', 3)]):
             db.execute(text("INSERT INTO notification_records (user_id,plan_id,due_date,channel,reminder_type,status,scheduled_at,retry_count) VALUES (1,1,:day,'email','same_day',:status,:now,:count)"), dict(day=date(2026, 9, 1+index), status=status, now=NOW, count=count))
@@ -353,7 +353,7 @@ def test_016_migration_preserves_attempts_and_sent_records(mysql_sessions):
         assert [(r.status, r.attempt_count) for r in records] == [('sent', 3), ('retry_wait', 1), ('unknown', 1), ('failed', 3)]
         assert all(r.last_attempt_at is None for r in records)
         assert records[1].next_retry_at == NOW
-        assert db.scalar(text('SELECT version_num FROM alembic_version')) == '0003_notification_attempts'
+        assert db.scalar(text('SELECT version_num FROM alembic_version')) == '0004_general_cycles'
 
 
 def test_016_dns_preparation_does_not_hold_user_lock(mysql_sessions, monkeypatch, tmp_path):
@@ -460,3 +460,63 @@ def test_016_expired_cleanup_preserves_concurrent_login(mysql_sessions, monkeypa
     with mysql_sessions() as db:
         assert db.scalar(select(func.count(SessionRecord.id))) == 1
         assert db.scalar(select(SessionRecord.expires_at)) > now
+
+
+def test_017_cycle_migration_preserves_bills_and_deleted_plans(mysql_sessions):
+    from pathlib import Path
+    from alembic import command
+    from alembic.config import Config
+    engine = mysql_sessions.kw['bind']
+    Base.metadata.drop_all(engine)
+    config = Config(str(Path(__file__).resolve().parents[2] / 'alembic.ini'))
+    with engine.begin() as connection:
+        config.attributes['connection'] = connection
+        command.upgrade(config, '0003_notification_attempts')
+        connection.execute(text("INSERT INTO users (id,username,password_hash,role,is_active,timezone,currency_code,created_at,updated_at) VALUES (1,'migration','unused','user',1,'UTC','CNY',:now,:now)"), {'now': NOW})
+        for index, (kind, days) in enumerate([('once', None), ('monthly', None), ('quarterly', None), ('yearly', None), ('custom_days', 17)], 1):
+            connection.execute(text("INSERT INTO bill_plans (id,user_id,name,amount,first_due_date,cycle_type,cycle_days,is_enabled,deleted_at,created_at,updated_at) VALUES (:id,1,'migration',12.50,:today,:kind,:days,:enabled,:deleted,:now,:now)"), dict(id=index, today=TODAY, kind=kind, days=days, enabled=index!=5, deleted=NOW if index==5 else None, now=NOW))
+            connection.execute(text("INSERT INTO bill_occurrences (id,user_id,plan_id,due_date,amount_snapshot,is_valid,invalidated_by_plan_disable,created_at,updated_at) VALUES (:id,1,:id,:today,9.50,0,0,:now,:now)"), dict(id=index, today=TODAY, now=NOW))
+        before = connection.execute(text('SELECT * FROM bill_occurrences ORDER BY id')).all()
+        command.upgrade(config, 'head')
+        command.upgrade(config, 'head')
+        assert connection.execute(text('SELECT * FROM bill_occurrences ORDER BY id')).all() == before
+        assert connection.execute(text('SELECT cycle_type, cycle_interval, cycle_days FROM bill_plans ORDER BY id')).all() == [('once',1,None),('month',1,None),('month',3,None),('year',1,None),('day',17,None)]
+        assert connection.scalar(text('SELECT deleted_at FROM bill_plans WHERE id=5')) == NOW
+
+
+def test_017_draft_test_holds_no_user_lock_and_rejects_concurrent_change(mysql_sessions, tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from cryptography.fernet import Fernet
+    from app.api import notifications as api
+    from app.schemas import NotificationSettingsPatch
+    from app.errors import AppError
+    seed(mysql_sessions)
+    with mysql_sessions() as db:
+        setting = db.get(NotificationSetting, 1)
+        setting.email_enabled = False
+        db.commit()
+    entered, proceed = Event(), Event()
+    def send(*args):
+        entered.set()
+        assert proceed.wait(5)
+    monkeypatch.setattr(api, 'send_test_email', send)
+    request = SimpleNamespace(cookies={}, state=SimpleNamespace(request_id='test'), app=SimpleNamespace(state=SimpleNamespace(fernet=Fernet(Fernet.generate_key()), settings=SimpleNamespace(logging=SimpleNamespace(directory=str(tmp_path))))))
+    payload = NotificationSettingsPatch(email_enabled=True, smtp_host='smtp.example.com', smtp_port=465, smtp_security='ssl', sender_email='sender@example.com', recipient_email='receiver@example.com')
+    def test_draft():
+        with mysql_sessions() as db:
+            return api._test_channel('email', payload, request, db.get(User, 1), db)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(test_draft)
+        assert entered.wait(5)
+        try:
+            with mysql_sessions() as db:
+                db.scalar(select(User).where(User.id == 1).with_for_update(nowait=True))
+                setting = db.scalar(select(NotificationSetting).where(NotificationSetting.user_id == 1).with_for_update(nowait=True))
+                setting.advance_days = 7
+                db.commit()
+        finally:
+            proceed.set()
+        with pytest.raises(AppError) as caught:
+            future.result(timeout=5)
+        assert caught.value.code == 'NOTIFICATION_SETTINGS_CHANGED'

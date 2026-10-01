@@ -278,3 +278,46 @@ describe('bill query interactions', () => {
     )
   })
 })
+
+it('opens a detail without resetting draft filters or reloading the list', async () => {
+  const wrapper = mountView()
+  await flushPromises()
+  const vm = wrapper.vm as unknown as { keyword: string }
+  vm.keyword = '尚未查询的名称'
+  const calls = vi.mocked(listBills).mock.calls.length
+  await router.push({ query: { bill_id: '3' } })
+  await flushPromises()
+  expect(vm.keyword).toBe('尚未查询的名称')
+  expect(listBills).toHaveBeenCalledTimes(calls)
+  await router.replace({ query: {} })
+  await flushPromises()
+  expect(listBills).toHaveBeenCalledTimes(calls)
+})
+
+it('renders the details drawer for a bill in the URL without resetting draft filters', async () => {
+  const wrapper = mountView()
+  await flushPromises()
+  const vm = wrapper.vm as unknown as BillsVm
+  vm.keyword = '尚未提交'
+  await router.push('/bills?bill_id=7')
+  await flushPromises()
+  expect(wrapper.findComponent({ name: 'BillDetailDrawer' }).props('billId')).toBe(7)
+  expect(vm.keyword).toBe('尚未提交')
+  expect(listBills).toHaveBeenCalledOnce()
+})
+
+it('refreshes default filters when URL normalization does not change the filter key', async () => {
+  const pending = deferred()
+  vi.mocked(listBills).mockReturnValueOnce(pending.promise)
+  const wrapper = mountView()
+  await flushPromises()
+  const vm = wrapper.vm as unknown as BillsVm
+  vm.query()
+  await flushPromises()
+  expect(listBills).toHaveBeenCalledTimes(2)
+  expect(vi.mocked(listBills).mock.calls[0]![1]!.aborted).toBe(true)
+  expect(vm.loading).toBe(false)
+  pending.resolve({ items: [bill], page: 1, page_size: 20, total: 1 })
+  await flushPromises()
+  expect(vm.bills).toEqual([])
+})

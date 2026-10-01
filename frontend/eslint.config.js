@@ -10,7 +10,12 @@ export default tseslint.config(
   {
     files: ['**/*.{ts,vue}'],
     languageOptions: {
-      globals: { window: 'readonly', document: 'readonly', Intl: 'readonly' },
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        Intl: 'readonly',
+        HTMLElement: 'readonly',
+      },
       parserOptions: {
         ecmaVersion: 'latest',
         sourceType: 'module',

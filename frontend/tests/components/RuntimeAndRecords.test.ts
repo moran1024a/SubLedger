@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { createRouter, createMemoryHistory } from 'vue-router'
 import { createPinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AdminHomeView from '@/views/admin/AdminHomeView.vue'
@@ -62,7 +63,13 @@ describe('notification records queries', () => {
       page: 1,
       page_size: 20,
     })
-    const wrapper = mount(NotificationRecords, { global: { plugins: [createPinia()] } })
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/settings/notifications', component: { template: '<div />' } }],
+    })
+    await router.push('/settings/notifications?tab=records')
+    await router.isReady()
+    const wrapper = mount(NotificationRecords, { global: { plugins: [createPinia(), router] } })
     await flushPromises()
     const vm = wrapper.vm as unknown as {
       channel: string

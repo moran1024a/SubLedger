@@ -1,4 +1,7 @@
-import { config } from '@vue/test-utils'
+import { config, enableAutoUnmount } from '@vue/test-utils'
+import { afterEach, vi } from 'vitest'
+enableAutoUnmount(afterEach)
+window.scrollTo = vi.fn()
 
 const elementComponents = [
   'el-alert',

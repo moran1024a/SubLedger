@@ -17,6 +17,7 @@ from app.middleware import RequestContextMiddleware
 from app.scheduler import Scheduler
 from app.security import LoginFailureLimiter, load_or_create_fernet_key
 from app.services.logging import write_system_log
+from app.services.notification_verification import NotificationVerification
 
 
 def create_app(settings=None) -> FastAPI:
@@ -40,12 +41,13 @@ def create_app(settings=None) -> FastAPI:
             database.dispose()
             write_system_log(settings, level="INFO", module="system", event="application_stopped", request_id=None, message="应用已停止")
 
-    app = FastAPI(title="SubLedger", version="0.1.6", lifespan=lifespan)
+    app = FastAPI(title="SubLedger", version="0.1.7", lifespan=lifespan)
     app.state.settings = settings
     app.state.database = database
     app.state.fernet = fernet
     app.state.scheduler = scheduler
     app.state.login_limiter = LoginFailureLimiter()
+    app.state.notification_verification = NotificationVerification()
     app.add_middleware(RequestContextMiddleware)
     app.add_exception_handler(AppError, app_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)

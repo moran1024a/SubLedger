@@ -20,17 +20,20 @@ import {
   ElSelect,
 } from 'element-plus'
 import { timezones, currencies } from '@/utils/profileOptions'
-import { onMounted, reactive, ref } from 'vue'
+import { nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { changePassword, updateProfile } from '@/api/users'
-import { ApiError } from '@/types/api'
+import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { useAuthStore } from '@/stores/auth'
 import PageHeader from '@/components/common/PageHeader.vue'
-import { getFieldErrors } from '@/utils/apiErrors'
+import { getFieldErrors, writeErrorMessage } from '@/utils/apiErrors'
 
 const auth = useAuthStore()
 const saving = ref(false)
 const passwordSaving = ref(false)
+const passwordError = ref('')
+const { dirty } = useUnsavedChanges()
+const baseline = ref('')
 const profileError = ref('')
 const profileFieldErrors = ref<Record<string, string>>({})
 const profile = reactive({ username: '', timezone: '', currency_code: '' })
@@ -42,8 +45,24 @@ onMounted(() => {
       timezone: auth.user.timezone,
       currency_code: auth.user.currency_code,
     })
+  baseline.value = JSON.stringify(profile)
 })
+watch(
+  [profile, password],
+  () => {
+    dirty.value =
+      Boolean(baseline.value) &&
+      (JSON.stringify(profile) !== baseline.value ||
+        Boolean(password.current || password.next || password.confirm))
+  },
+  { deep: true },
+)
+async function focusError() {
+  await nextTick()
+  document.querySelector<HTMLElement>('.is-error input')?.focus()
+}
 async function saveProfile() {
+  if (saving.value || passwordSaving.value) return
   profileError.value = ''
   profileFieldErrors.value = {}
   if (!profile.username.trim()) {
@@ -58,15 +77,25 @@ async function saveProfile() {
       currency_code: profile.currency_code,
     })
     auth.setUser(updated)
+    Object.assign(profile, {
+      username: updated.username,
+      timezone: updated.timezone,
+      currency_code: updated.currency_code,
+    })
+    baseline.value = JSON.stringify(profile)
+    dirty.value = Boolean(password.current || password.next || password.confirm)
     ElMessage.success('个人资料已保存')
   } catch (cause) {
     profileFieldErrors.value = getFieldErrors(cause)
-    profileError.value = cause instanceof ApiError ? cause.message : '保存失败'
+    profileError.value = writeErrorMessage(cause)
+    void focusError()
   } finally {
     saving.value = false
   }
 }
 async function savePassword() {
+  if (saving.value || passwordSaving.value) return
+  passwordError.value = ''
   if (password.next.length < 8) {
     ElMessage.error('新密码至少 8 个字符')
     return
@@ -82,7 +111,7 @@ async function savePassword() {
     ElMessage.success('密码已修改，请重新登录')
     window.location.assign('/login')
   } catch (cause) {
-    ElMessage.error(cause instanceof ApiError ? cause.message : '密码修改失败')
+    passwordError.value = writeErrorMessage(cause)
   } finally {
     passwordSaving.value = false
   }
@@ -92,10 +121,11 @@ async function savePassword() {
 <template>
   <div class="page-container">
     <PageHeader title="个人设置" />
+    <p v-if="dirty" class="hint" role="status">有未保存的修改</p>
     <div class="settings-grid">
       <el-card
         ><template #header>基本资料</template
-        ><el-form label-position="top"
+        ><el-form label-position="top" :disabled="saving || passwordSaving"
           ><el-form-item label="用户 ID"
             ><el-input :model-value="auth.user?.id" disabled /></el-form-item
           ><el-form-item label="角色"
@@ -117,8 +147,10 @@ async function savePassword() {
                 v-for="currency in currencies"
                 :key="currency"
                 :label="currency"
-                :value="currency" /></el-select></el-form-item
-          ><el-alert
+                :value="currency" /></el-select
+          ></el-form-item>
+          <p class="hint">时区影响账单日期和提醒时间；默认货币仅改变显示，不进行汇率换算。</p>
+          <el-alert
             v-if="profileError"
             :title="profileError"
             type="error"
@@ -129,7 +161,7 @@ async function savePassword() {
         ></el-card
       ><el-card
         ><template #header>修改密码</template
-        ><el-form label-position="top"
+        ><el-form label-position="top" :disabled="saving || passwordSaving"
           ><el-form-item label="当前密码"
             ><el-input
               v-model="password.current"
@@ -148,7 +180,12 @@ async function savePassword() {
               type="password"
               show-password
               autocomplete="new-password" /></el-form-item
-          ><el-button type="primary" :loading="passwordSaving" @click="savePassword"
+          ><el-alert
+            v-if="passwordError"
+            :title="passwordError"
+            type="warning"
+            :closable="false"
+          /><el-button type="primary" :loading="passwordSaving" @click="savePassword"
             >修改密码</el-button
           ></el-form
         ></el-card
@@ -158,6 +195,11 @@ async function savePassword() {
 </template>
 
 <style scoped>
+.hint {
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 1.7;
+}
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

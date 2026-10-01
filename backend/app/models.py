@@ -67,6 +67,7 @@ class BillPlan(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     first_due_date: Mapped[date] = mapped_column(Date, nullable=False)
     cycle_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    cycle_interval: Mapped[int] = mapped_column(INTEGER(unsigned=True), nullable=False, default=1, server_default="1")
     cycle_days: Mapped[int | None] = mapped_column(INTEGER(unsigned=True))
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     note: Mapped[str | None] = mapped_column(Text)

@@ -18,9 +18,11 @@ import {
   ElOption,
   ElSelect,
 } from 'element-plus'
-import { reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import type { BillPlan, BillPlanPayload } from '@/types/api'
-import { isValidAmount, isValidCycleDays } from '@/utils/validation'
+import { isValidAmount } from '@/utils/validation'
+import { cycleParts, cycleLimits, formatCycle } from '@/utils/format'
+import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 
 const props = defineProps<{
   plan?: BillPlan | null
@@ -33,7 +35,8 @@ const form = reactive<BillPlanPayload>({
   name: '',
   amount: '',
   first_due_date: '',
-  cycle_type: 'monthly',
+  cycle_type: 'month',
+  cycle_interval: 1,
   cycle_days: null,
   note: '',
 })
@@ -54,13 +57,17 @@ const rules = {
   ],
   first_due_date: [{ required: true, message: '请选择首次账单日期', trigger: 'change' }],
   cycle_type: [{ required: true, message: '请选择周期', trigger: 'change' }],
-  cycle_days: [
+  cycle_interval: [
     {
-      validator: (_rule: unknown, value: number | null, callback: (error?: Error) => void) =>
-        form.cycle_type !== 'custom_days' || (value !== null && isValidCycleDays(String(value)))
-          ? callback()
-          : callback(new Error('请输入 1 到 36500 的整数天数')),
-      trigger: 'blur',
+      validator: (_rule: unknown, value: number, callback: (error?: Error) => void) => {
+        const max =
+          form.cycle_type === 'once'
+            ? 1
+            : cycleLimits[cycleParts(form.cycle_type).type as keyof typeof cycleLimits]
+        if (Number.isInteger(value) && value >= 1 && value <= max) callback()
+        else callback(new Error(`请输入 1 到 ${max} 的整数`))
+      },
+      trigger: 'change',
     },
   ],
   note: [{ max: 2000, message: '备注最多 2000 个字符', trigger: 'blur' }],
@@ -73,8 +80,9 @@ watch(
         name: plan.name,
         amount: plan.amount,
         first_due_date: plan.first_due_date,
-        cycle_type: plan.cycle_type,
-        cycle_days: plan.cycle_days,
+        cycle_type: cycleParts(plan.cycle_type, plan.cycle_days, plan.cycle_interval).type,
+        cycle_interval: cycleParts(plan.cycle_type, plan.cycle_days, plan.cycle_interval).interval,
+        cycle_days: null,
         note: plan.note ?? '',
       })
   },
@@ -83,18 +91,57 @@ watch(
 watch(
   () => form.cycle_type,
   (type) => {
-    if (type !== 'custom_days') form.cycle_days = null
+    if (type === 'once') form.cycle_interval = 1
   },
 )
+const { dirty, confirmDiscard } = useUnsavedChanges()
+const baseline = ref(JSON.stringify(form))
+watch(
+  form,
+  () => {
+    dirty.value = JSON.stringify(form) !== baseline.value
+  },
+  { deep: true, flush: 'sync' },
+)
+function markSaved() {
+  baseline.value = JSON.stringify(form)
+  dirty.value = false
+}
+watch(
+  () => props.plan,
+  () => {
+    void nextTick(markSaved)
+  },
+)
+const maxInterval = computed(() =>
+  form.cycle_type === 'once'
+    ? 1
+    : cycleLimits[cycleParts(form.cycle_type).type as keyof typeof cycleLimits],
+)
+async function focusError() {
+  await nextTick()
+  formRef.value?.$el?.querySelector('.is-error input, .is-error textarea')?.focus()
+}
+watch(() => props.fieldErrors, focusError)
 async function submit() {
-  if (!(await formRef.value?.validate())) return
+  if (props.submitting) return
+  try {
+    if (!(await formRef.value?.validate())) return
+  } catch {
+    await focusError()
+    return
+  }
   emit('submit', {
     ...form,
     name: form.name.trim(),
     note: form.note?.trim() || null,
-    cycle_days: form.cycle_type === 'custom_days' ? Number(form.cycle_days) : null,
+    cycle_days: null,
   })
 }
+function cancel() {
+  if (!props.submitting && confirmDiscard()) emit('cancel')
+}
+defineExpose({ markSaved })
 </script>
 
 <template>
@@ -102,6 +149,8 @@ async function submit() {
     ref="formRef"
     :model="form"
     :rules="rules"
+    :disabled="submitting"
+    scroll-to-error
     label-position="top"
     class="plan-form"
     @submit.prevent="submit"
@@ -119,38 +168,50 @@ async function submit() {
         type="date"
         style="width: 100%"
     /></el-form-item>
-    <el-form-item label="周期" prop="cycle_type" :error="fieldErrors?.cycle_type"
-      ><el-select v-model="form.cycle_type" style="width: 100%"
-        ><el-option label="单次" value="once" /><el-option label="每月" value="monthly" /><el-option
-          label="每季度"
-          value="quarterly" /><el-option label="每年" value="yearly" /><el-option
-          label="自定义天数"
-          value="custom_days" /></el-select
-    ></el-form-item>
+    <el-form-item label="重复方式 / 周期单位" prop="cycle_type" :error="fieldErrors?.cycle_type">
+      <el-select v-model="form.cycle_type" style="width: 100%">
+        <el-option label="单次" value="once" /><el-option label="每 N 天" value="day" />
+        <el-option label="每 N 周" value="week" /><el-option label="每 N 个月" value="month" />
+        <el-option label="每 N 年" value="year" />
+      </el-select>
+    </el-form-item>
     <el-form-item
-      v-if="form.cycle_type === 'custom_days'"
-      label="每 N 天"
-      prop="cycle_days"
-      :error="fieldErrors?.cycle_days"
-      ><el-input-number
-        v-model="form.cycle_days"
+      v-if="form.cycle_type !== 'once'"
+      label="周期间隔"
+      prop="cycle_interval"
+      :error="fieldErrors?.cycle_interval"
+    >
+      <el-input-number
+        v-model="form.cycle_interval"
         :min="1"
-        :max="36500"
+        :max="maxInterval"
         :precision="0"
         controls-position="right"
         style="width: 100%"
-    /></el-form-item>
+      />
+    </el-form-item>
+    <p class="form-summary" aria-live="polite">
+      {{ formatCycle(form.cycle_type, null, form.cycle_interval) }} · 每次
+      {{ form.amount || '—' }} · 首次
+      {{ form.first_due_date || '待选择' }}。月、年以首次日期为基准，短月取月末。
+    </p>
     <el-form-item label="备注" prop="note" :error="fieldErrors?.note"
       ><el-input v-model="form.note" type="textarea" :rows="4" maxlength="2000" show-word-limit
     /></el-form-item>
+    <p v-if="dirty" class="form-summary">有未保存的修改</p>
     <div class="form-actions">
-      <el-button @click="$emit('cancel')">取消</el-button
+      <el-button @click="cancel">取消</el-button
       ><el-button type="primary" :loading="submitting" native-type="submit">保存</el-button>
     </div>
   </el-form>
 </template>
 
 <style scoped>
+.form-summary {
+  color: #6b7280;
+  font-size: 13px;
+  margin: 0 0 18px;
+}
 .plan-form {
   max-width: 720px;
 }

@@ -47,3 +47,10 @@ describe('validation helpers', () => {
     expect(isValidCycleDays('0')).toBe(false)
   })
 })
+
+it('formats generalized calendar cycles, including two and three years', () => {
+  expect(formatCycle('year', null, 2)).toBe('每 2 年')
+  expect(formatCycle('year', null, 3)).toBe('每 3 年')
+  expect(formatCycle('week', null, 2)).toBe('每 2 周')
+  expect(formatCycle('month', null, 3)).toBe('每 3 个月')
+})

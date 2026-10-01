@@ -1,5 +1,6 @@
 export type UserRole = 'admin' | 'user'
-export type CycleType = 'once' | 'monthly' | 'quarterly' | 'yearly' | 'custom_days'
+export type CycleType =
+  'once' | 'day' | 'week' | 'month' | 'year' | 'monthly' | 'quarterly' | 'yearly' | 'custom_days'
 export type BillTimeStatus = 'upcoming' | 'passed'
 export type MoneyString = string
 
@@ -21,6 +22,7 @@ export interface BillPlan {
   amount: MoneyString
   first_due_date: string
   cycle_type: CycleType
+  cycle_interval?: number
   cycle_days: number | null
   is_enabled: boolean
   note: string | null
@@ -33,6 +35,7 @@ export interface BillPlanPayload {
   amount: string
   first_due_date: string
   cycle_type: CycleType
+  cycle_interval?: number
   cycle_days?: number | null
   note?: string | null
 }
@@ -40,6 +43,7 @@ export interface BillPlanPayload {
 export type BillPlanPatch = Partial<BillPlanPayload>
 
 export interface BillOccurrence {
+  plan_status?: 'enabled' | 'disabled' | 'deleted'
   id: number
   plan_id: number
   plan_name: string
@@ -48,6 +52,7 @@ export interface BillOccurrence {
   is_valid: boolean
   time_status: BillTimeStatus
   cycle_type: CycleType
+  cycle_interval?: number
   cycle_days: number | null
 }
 
@@ -79,6 +84,7 @@ export interface StatisticsResponse {
 }
 
 export interface NotificationSettings {
+  settings_version?: string
   email_enabled: boolean
   smtp_host: string | null
   smtp_port: number | null
@@ -99,6 +105,9 @@ export interface NotificationSettings {
 }
 
 export interface NotificationPayload {
+  settings_version?: string
+  email_verification_token?: string
+  feishu_verification_token?: string
   email_enabled: boolean
   smtp_host?: string | null
   smtp_port?: number | null

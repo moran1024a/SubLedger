@@ -122,7 +122,11 @@ const routes: RouteRecordRaw[] = [
   { path: '/:pathMatch(.*)*', redirect: '/404' },
 ]
 
-const router = createRouter({ history: createWebHistory(), routes })
+const router = createRouter({
+  history: createWebHistory(),
+  routes,
+  scrollBehavior: (to, from, saved) => saved ?? (to.path === from.path ? false : { top: 0 }),
+})
 
 router.beforeEach(async (to) => {
   const auth = useAuthStore()

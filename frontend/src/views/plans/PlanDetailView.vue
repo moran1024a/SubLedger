@@ -8,11 +8,14 @@ import 'element-plus/es/components/message-box/style/css'
 
 import { ElButton, ElCard, ElDescriptions, ElDescriptionsItem } from 'element-plus'
 import { useQueryRequest } from '@/composables/useQueryRequest'
-import { onBeforeUnmount, watch, ref } from 'vue'
+import { onBeforeUnmount, watch, ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { deletePlan, disablePlan, enablePlan, getPlan, updatePlan } from '@/api/plans'
 import { ApiError, type BillPlan, type BillPlanPayload } from '@/types/api'
+import { returnPath } from '@/utils/navigation'
+import OperationFeedback from '@/components/common/OperationFeedback.vue'
+import { confirmDiscardChanges } from '@/composables/useUnsavedChanges'
 import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingBlock from '@/components/common/LoadingBlock.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
@@ -21,11 +24,13 @@ import StatusTag from '@/components/common/StatusTag.vue'
 import MoneyText from '@/components/common/MoneyText.vue'
 import { useAuthStore } from '@/stores/auth'
 import { formatCycle, formatDateTime } from '@/utils/format'
-import { asApiError, getFieldErrors } from '@/utils/apiErrors'
+import { asApiError, getFieldErrors, writeErrorMessage } from '@/utils/apiErrors'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const returnTo = computed(() => returnPath(route.query.return_to))
+const operationMessage = ref('')
 const plan = ref<BillPlan | null>(null)
 const loading = ref(true)
 const editing = ref(false)
@@ -41,6 +46,11 @@ onBeforeUnmount(() => {
   requestSequence += 1
 })
 const queryRequests = useQueryRequest()
+async function reload() {
+  if (editing.value && !confirmDiscardChanges()) return
+  editing.value = false
+  await load()
+}
 async function load() {
   const signal = queryRequests.next()
   const sequence = ++requestSequence
@@ -66,6 +76,7 @@ async function save(payload: BillPlanPayload) {
   const scheduleChanged =
     old.first_due_date !== payload.first_due_date ||
     old.cycle_type !== payload.cycle_type ||
+    (old.cycle_interval ?? 1) !== (payload.cycle_interval ?? 1) ||
     old.cycle_days !== payload.cycle_days
   const amountChanged = old.amount !== payload.amount
   const targetId = plan.value.id
@@ -93,7 +104,7 @@ async function save(payload: BillPlanPayload) {
     if (!current()) return
     if (cause !== 'cancel' && cause !== 'close') {
       fieldErrors.value = getFieldErrors(cause)
-      ElMessage.error(cause instanceof ApiError ? cause.message : '保存失败')
+      operationMessage.value = writeErrorMessage(cause)
     }
   } finally {
     submitting.value = false
@@ -126,8 +137,7 @@ async function toggle() {
     await load()
   } catch (cause) {
     if (!current()) return
-    if (cause !== 'cancel' && cause !== 'close')
-      ElMessage.error(cause instanceof ApiError ? cause.message : '操作失败')
+    if (cause !== 'cancel' && cause !== 'close') operationMessage.value = writeErrorMessage(cause)
   } finally {
     toggling.value = false
   }
@@ -155,7 +165,7 @@ async function remove() {
       ElMessage.success('账单规则已不存在')
       await router.replace('/plans')
     } else if (cause !== 'cancel' && cause !== 'close') {
-      ElMessage.error(cause instanceof ApiError ? cause.message : '删除失败')
+      operationMessage.value = writeErrorMessage(cause)
     }
   } finally {
     deleting.value = false
@@ -180,7 +190,16 @@ watch(
   <div class="page-container">
     <PageHeader title="账单规则详情"
       ><template #actions
-        ><el-button @click="router.push('/plans')">返回列表</el-button
+        ><el-button @click="router.push(returnTo)">返回来源</el-button
+        ><el-button
+          v-if="plan && !editing"
+          @click="
+            router.push({
+              path: '/bills',
+              query: { plan_id: String(plan.id), time_status: 'all', return_to: route.fullPath },
+            })
+          "
+          >查看关联账单</el-button
         ><el-button
           v-if="plan"
           :type="plan.is_enabled ? 'danger' : 'success'"
@@ -203,7 +222,11 @@ watch(
           >删除</el-button
         ></template
       ></PageHeader
-    ><LoadingBlock v-if="loading" /><ErrorState
+    ><OperationFeedback
+      :message="operationMessage"
+      action="重新查询核实"
+      @check="reload"
+    /><LoadingBlock v-if="loading" /><ErrorState
       v-else-if="error"
       :message="error.message"
       :request-id="error.requestId"
@@ -224,16 +247,16 @@ watch(
         /></el-descriptions-item>
         ><el-descriptions-item label="首次日期">{{ plan.first_due_date }}</el-descriptions-item
         ><el-descriptions-item label="周期">{{
-          formatCycle(plan.cycle_type, plan.cycle_days)
+          formatCycle(plan.cycle_type, plan.cycle_days, plan.cycle_interval)
         }}</el-descriptions-item
         ><el-descriptions-item label="状态"
           ><StatusTag :active="plan.is_enabled" /></el-descriptions-item
         ><el-descriptions-item label="备注">{{ plan.note || '—' }}</el-descriptions-item
         ><el-descriptions-item label="创建时间">{{
-          formatDateTime(plan.created_at)
+          formatDateTime(plan.created_at, auth.user?.timezone)
         }}</el-descriptions-item
         ><el-descriptions-item label="更新时间">{{
-          formatDateTime(plan.updated_at)
+          formatDateTime(plan.updated_at, auth.user?.timezone)
         }}</el-descriptions-item></el-descriptions
       ></el-card
     >

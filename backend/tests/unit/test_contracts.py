@@ -53,8 +53,9 @@ def test_plan_and_occurrence_responses_include_frontend_contract_fields():
     assert plan_result["created_at"] == created
     assert plan_result["updated_at"] == created
     assert occurrence_result["plan_name"] == "Hosting"
-    assert occurrence_result["cycle_type"] == "custom_days"
-    assert occurrence_result["cycle_days"] == 14
+    assert occurrence_result["cycle_type"] == "day"
+    assert occurrence_result["cycle_interval"] == 14
+    assert occurrence_result["cycle_days"] is None
     assert "name" not in occurrence_result
 
 
