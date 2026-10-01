@@ -18,7 +18,8 @@ vi.mock('@/api/plans', () => ({
   enablePlan: vi.fn(),
 }))
 vi.mock('@/api/auth', () => ({ getCurrentUser: vi.fn(), login: vi.fn(), logout: vi.fn() }))
-vi.mock('element-plus', () => ({
+vi.mock('element-plus', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('element-plus')>()),
   ElMessage: { success: vi.fn(), error: vi.fn() },
   ElMessageBox: { confirm: vi.fn() },
 }))

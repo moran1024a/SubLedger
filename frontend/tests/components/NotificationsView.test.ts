@@ -15,7 +15,10 @@ vi.mock('@/api/notifications', () => ({
 vi.mock('@/composables/useUnsavedChanges', () => ({
   useUnsavedChanges: () => ({ dirty: ref(false) }),
 }))
-vi.mock('element-plus', () => ({ ElMessage: { success: vi.fn(), error: vi.fn() } }))
+vi.mock('element-plus', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('element-plus')>()),
+  ElMessage: { success: vi.fn(), error: vi.fn() },
+}))
 
 const settings: NotificationSettings = {
   email_enabled: true,

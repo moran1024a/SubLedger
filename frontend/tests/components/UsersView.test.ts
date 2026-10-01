@@ -13,7 +13,8 @@ vi.mock('@/api/users', () => ({
   listUsers: vi.fn(),
   resetUserPassword: vi.fn(),
 }))
-vi.mock('element-plus', () => ({
+vi.mock('element-plus', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('element-plus')>()),
   ElMessage: { success: vi.fn(), error: vi.fn() },
   ElMessageBox: { confirm: vi.fn() },
 }))
@@ -120,10 +121,13 @@ it('keeps drafts out of paginated user requests', async () => {
   vm.search = 'unsubmitted'
   vm.page = 2
   await vm.load()
-  expect(listUsers).toHaveBeenLastCalledWith({
-    q: 'member',
-    is_active: true,
-    page: 2,
-    page_size: 20,
-  })
+  expect(listUsers).toHaveBeenLastCalledWith(
+    {
+      q: 'member',
+      is_active: true,
+      page: 2,
+      page_size: 20,
+    },
+    expect.any(AbortSignal),
+  )
 })

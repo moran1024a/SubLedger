@@ -264,3 +264,47 @@ class UserPage(BaseModel):
     page: int
     page_size: int
     total: int
+
+
+class RuntimeTaskResponse(BaseModel):
+    id: str
+    name: str
+    status: Literal['waiting', 'running', 'ok', 'warning', 'error', 'disabled']
+    next_run_at: datetime | None
+    last_started_at: datetime | None
+    last_finished_at: datetime | None
+    last_success_at: datetime | None
+    duration_seconds: float | None
+    consecutive_failures: int
+    last_error: str | None
+    running: bool
+    counts: dict[str, int] | None
+
+
+class RuntimeResponse(BaseModel):
+    status: Literal['ok', 'error', 'disabled']
+    tasks: list[RuntimeTaskResponse]
+
+
+class NotificationRecordResponse(BaseModel):
+    id: int
+    plan_id: int
+    plan_name: str
+    due_date: date
+    channel: Literal['email', 'feishu']
+    reminder_type: Literal['advance', 'same_day']
+    status: Literal['pending', 'retry_wait', 'sent', 'failed', 'unknown', 'expired']
+    scheduled_at: datetime
+    sent_at: datetime | None
+    attempt_count: int
+    last_attempt_at: datetime | None
+    next_retry_at: datetime | None
+    error_code: str | None
+    error_message: str | None
+
+
+class NotificationRecordPage(BaseModel):
+    items: list[NotificationRecordResponse]
+    page: int
+    page_size: int
+    total: int

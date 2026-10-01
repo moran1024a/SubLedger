@@ -1,4 +1,13 @@
 <script setup lang="ts">
+import 'element-plus/es/components/alert/style/css'
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/card/style/css'
+import 'element-plus/es/components/form/style/css'
+import 'element-plus/es/components/form-item/style/css'
+import 'element-plus/es/components/input/style/css'
+import 'element-plus/es/components/message/style/css'
+
+import { ElAlert, ElButton, ElCard, ElForm, ElFormItem, ElInput } from 'element-plus'
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'

@@ -180,3 +180,45 @@ export interface UserPage {
   page_size: number
   total: number
 }
+
+export interface RuntimeTask {
+  id: string
+  name: string
+  status: 'waiting' | 'running' | 'ok' | 'warning' | 'error' | 'disabled'
+  next_run_at: string | null
+  last_started_at: string | null
+  last_finished_at: string | null
+  last_success_at: string | null
+  duration_seconds: number | null
+  consecutive_failures: number
+  last_error: string | null
+  counts: Record<string, number> | null
+}
+export interface RuntimeResponse {
+  status: 'ok' | 'error' | 'disabled'
+  tasks: RuntimeTask[]
+}
+export type NotificationStatus =
+  'pending' | 'retry_wait' | 'sent' | 'failed' | 'unknown' | 'expired'
+export interface NotificationRecord {
+  id: number
+  plan_id: number
+  plan_name: string
+  due_date: string
+  channel: 'email' | 'feishu'
+  reminder_type: 'advance' | 'same_day'
+  status: NotificationStatus
+  scheduled_at: string
+  sent_at: string | null
+  attempt_count: number
+  last_attempt_at: string | null
+  next_retry_at: string | null
+  error_code: string | null
+  error_message: string | null
+}
+export interface NotificationRecordPage {
+  items: NotificationRecord[]
+  page: number
+  page_size: number
+  total: number
+}

@@ -12,7 +12,8 @@ vi.mock('@/api/plans', () => ({
   enablePlan: vi.fn(),
   listPlans: vi.fn(),
 }))
-vi.mock('element-plus', () => ({
+vi.mock('element-plus', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('element-plus')>()),
   ElMessage: { success: vi.fn(), error: vi.fn() },
   ElMessageBox: { confirm: vi.fn() },
 }))

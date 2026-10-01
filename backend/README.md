@@ -2,7 +2,7 @@
 
 本文档是当前代码实际提供的后端技术说明与 HTTP API 权威文档，覆盖数据格式、认证方式、Schema、接口、错误码和业务语义。当在线 OpenAPI、其他需求材料与本文档存在差异时，应以当前路由、Schema 和服务实现为准。安装、部署和首次使用请参阅 [项目安装与部署](../README.md#安装与部署)。
 
-- 应用版本：`0.1.5`
+- 应用版本：`0.1.6`
 - API 前缀：`/api/v1`
 - 默认本地地址：`http://127.0.0.1:8000`
 - Docker 容器内部地址：`http://127.0.0.1:8000`
@@ -51,7 +51,7 @@
 
 ### 启动与调度约束
 
-应用启动时会连接数据库、执行迁移、初始化固定 `id=0` 的管理员和默认通知配置，然后按配置启动调度器。调度器包含账单补全、通知检查和日志清理三类作业；作业异常写入系统日志，不直接终止 Web 服务。
+应用启动时会连接数据库、执行迁移、初始化固定 `id=0` 的管理员和默认通知配置，然后按配置启动调度器。调度器包含账单补全、通知检查、日志清理和过期会话清理四类作业；作业异常写入系统日志，不直接终止 Web 服务。
 
 必须使用单个 Uvicorn worker。调度器、登录限流和 JSON Lines 文件日志都位于进程内，多个 worker 或多个后端副本会造成重复调度、限流状态分裂或日志竞争。Docker 容器内部使用端口 `8000`；宿主机端口映射和部署操作见 [项目安装与部署](../README.md#安装与部署)。
 
@@ -59,7 +59,7 @@
 
 密码只保存 Argon2 哈希，Session Token 只通过 `HttpOnly` Cookie 传输，SMTP 密码、飞书 Webhook 和签名密钥使用 Fernet 加密。Fernet 主密钥必须持久化且权限为 `0600`，并与数据库一起备份。日志按敏感键脱敏，但仍应限制日志文件和下载接口访问。
 
-后端单元测试位于 `backend/tests/unit`，覆盖通知出站限制、TLS、失败隔离、周期边界和日志故障等回归。外部发送使用替身，不连接真实 SMTP 或飞书。
+后端单元测试位于 `backend/tests/unit`，覆盖通知出站限制、TLS、失败隔离、周期边界和日志故障等回归。外部发送使用替身或本机临时 SMTP/socket 接收器，不连接公网 SMTP 或飞书。
 
 `backend/tests/integration/test_mysql_billing.py` 使用真实 MySQL 验证 `REPEATABLE READ` 下的双事务交错操作，涵盖手动作废、规则启停、账单补齐、金额修改和通知去重。默认跳过；在独立测试服务器上设置 `SUBLEDGER_TEST_MYSQL_URL` 后执行：
 
@@ -92,7 +92,7 @@ SUBLEDGER_CONFIG=/tmp/subledger-test-no-config.toml python -m pytest
 - `200 OK` 返回查询或操作结果。
 - `201 Created` 返回新建资源。
 - `204 No Content` 不返回响应体。
-- 除账单实例和管理员用户列表外，列表接口返回 JSON 数组且当前不分页。
+- 账单实例、管理员用户列表和个人通知记录均返回分页结构；规则和日志列表返回数组。
 - 账单实例列表使用 `page`、`page_size`，返回 `{items, page, page_size, total}`。
 - FastAPI 未匹配路由、方法不允许等框架错误可能仍使用 `{"detail": ...}`，不保证采用业务错误信封。
 
@@ -486,6 +486,8 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 | 33 | GET | `/api/v1/admin/system-logs` | 管理员 | 200 |
 | 34 | GET | `/api/v1/admin/system-logs/download` | 管理员 | 200 |
 | 35 | GET | `/health` | 公开 | 200 或 503 |
+| 36 | GET | `/api/v1/admin/runtime` | 管理员 | 200 |
+| 37 | GET | `/api/v1/me/notification-records` | 当前用户 | 200 |
 
 ## 认证 API
 
@@ -571,6 +573,7 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 | 状态 | `code` | 条件 |
 |---:|---|---|
 | 409 | `USER_USERNAME_CONFLICT` | 用户名已存在 |
+| 409 | `NOTIFICATION_SETTINGS_CHANGED` | DNS 校验期间通知配置被其他请求修改，需重新加载 |
 
 ### `GET /api/v1/admin/users/{user_id}`
 
@@ -595,6 +598,7 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 |---:|---|---|
 | 404 | `USER_NOT_FOUND` | 普通用户不存在，或 `user_id=0` |
 | 409 | `USER_USERNAME_CONFLICT` | 用户名已存在 |
+| 409 | `NOTIFICATION_SETTINGS_CHANGED` | DNS 校验期间通知配置被其他请求修改，需重新加载 |
 
 ### `PUT /api/v1/admin/users/{user_id}/password`
 
@@ -823,13 +827,13 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 - 权限：当前用户
 - 请求参数/请求体：无
 - 成功：`204 No Content`
-- 行为：使用已保存配置实际连接 SMTP 并发送测试邮件，网络超时为 15 秒
+- 行为：使用已保存配置实际连接 SMTP 并发送测试邮件，DNS 与网络发送使用可配置的独立预算，默认 DNS 5 秒、发送阶段总计 30 秒
 
 | 状态 | `code` | 条件 |
 |---:|---|---|
 | 400 | `EMAIL_SETTINGS_INCOMPLETE` | 当前启用的邮件配置不完整 |
 | 400 | `FEISHU_SETTINGS_INCOMPLETE` | 当前启用的飞书配置不完整；测试前会检查所有启用渠道 |
-| 400 | `EMAIL_TEST_FAILED` | 测试邮件发送失败 |
+| 400 | `NETWORK_TIMEOUT` / `NETWORK_ERROR` / `SMTP_REJECTED` 等 | 测试发送失败，详见发送与重试语义 |
 | 404 | `NOTIFICATION_SETTINGS_NOT_FOUND` | 通知配置记录不存在 |
 
 测试接口不要求 `email_enabled=true`，但必须具有可用于实际发送的保存配置。
@@ -839,13 +843,13 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 - 权限：当前用户
 - 请求参数/请求体：无
 - 成功：`204 No Content`
-- 行为：使用已保存 Webhook 实际发送飞书测试消息，HTTP 超时为 15 秒
+- 行为：使用已保存 Webhook 实际发送飞书测试消息，DNS 与网络发送使用可配置的独立预算，默认 DNS 5 秒、发送阶段总计 30 秒
 
 | 状态 | `code` | 条件 |
 |---:|---|---|
 | 400 | `EMAIL_SETTINGS_INCOMPLETE` | 当前启用的邮件配置不完整；测试前会检查所有启用渠道 |
 | 400 | `FEISHU_SETTINGS_INCOMPLETE` | 当前启用的飞书配置不完整 |
-| 400 | `FEISHU_TEST_FAILED` | 飞书测试消息发送失败 |
+| 400 | `WEBHOOK_HTTP_ERROR` / `WEBHOOK_REJECTED` / `DELIVERY_UNKNOWN` 等 | 测试失败或结果待核实 |
 | 404 | `NOTIFICATION_SETTINGS_NOT_FOUND` | 通知配置记录不存在 |
 
 ### 自动通知语义
@@ -854,9 +858,9 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 - 支持提前提醒和到期日当天提醒；时间按用户时区解释。
 - 调度任务到达或超过配置时间后尝试发送，不要求精确命中某一分钟。
 - 通知以 `plan_id + due_date + channel + reminder_type` 防重。
-- 发送前按规则、账单、通知记录的顺序锁定并读取最新状态，避免旧事务快照重复发送已成功的记录。
-- 已成功发送或失败重试达到 3 次后不再发送。
-- SMTP 已接受邮件后的 QUIT/连接关闭异常不会改判发送失败；认证、TLS 或发送阶段的异常仍算失败。
+- DNS 校验后按用户、通知设置、规则、账单、通知记录的顺序锁定并读取最新状态，避免旧事务快照重复发送已成功的记录。
+- 已成功、结果未知、明确配置错误或已尝试 3 次的记录不再自动发送；临时故障按 60/300 秒间隔重试，且不跨提醒日期。
+- SMTP 已接受邮件后的连接关闭异常不会改判发送失败；其余异常按是否明确拒绝、可重试或提交后结果未知分类。
 - 单个用户或规则检查异常会回滚相应事务并记录错误，继续处理其他规则和用户。
 - 尚未生成账单实例时可以依据启用规则推算提醒；如果实例已存在且无效，则跳过。
 - 外部服务可能已收到消息但数据库状态尚未提交，因此系统不保证严格的 exactly-once。
@@ -947,12 +951,12 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 }
 ```
 
-数据库异常或启用但未运行的调度器会返回 HTTP 503 和 `status: "degraded"`；调度器关闭时 `scheduler` 为 `"disabled"`，服务仍可健康。
+数据库异常、调度器未运行或任务异常达到健康阈值时返回 HTTP 503 和 `status: "degraded"`；调度器关闭时 `scheduler` 为 `"disabled"`，服务仍可健康。
 
 | HTTP 状态 | 条件 |
 |---:|---|
-| 200 | 数据库可连接，并且调度器已禁用或正在运行 |
-| 503 | 数据库不可连接，或调度器已启用但未运行 |
+| 200 | 数据库可连接，并且调度器已禁用或运行且任务健康 |
+| 503 | 数据库不可连接、调度器已启用但未运行，或任务持续失败/逾期/超时 |
 
 调度器配置为禁用时，`scheduler` 为 `"disabled"`，但只要数据库正常，`status` 仍为 `ok`。
 
@@ -967,8 +971,8 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 | 400 | `BILL_PLAN_DISABLED` | 不能恢复停用规则下当前或未来账单 |
 | 400 | `EMAIL_SETTINGS_INCOMPLETE` | 已启用的邮件配置不完整 |
 | 400 | `FEISHU_SETTINGS_INCOMPLETE` | 已启用的飞书配置不完整 |
-| 400 | `EMAIL_TEST_FAILED` | 测试邮件发送失败 |
-| 400 | `FEISHU_TEST_FAILED` | 飞书测试消息发送失败 |
+| 400 | `NETWORK_TIMEOUT` / `NETWORK_ERROR` / `SMTP_REJECTED` 等 | 测试发送失败，详见发送与重试语义 |
+| 400 | `WEBHOOK_HTTP_ERROR` / `WEBHOOK_REJECTED` / `DELIVERY_UNKNOWN` 等 | 测试失败或结果待核实 |
 | 400 | `SMTP_TARGET_NOT_ALLOWED` | SMTP 目标不满足服务器出站限制或无法解析 |
 | 400 | `FEISHU_WEBHOOK_NOT_ALLOWED` | 非允许的官方 HTTPS 机器人 Webhook |
 | 401 | `AUTH_REQUIRED` | 缺少 Session Cookie |
@@ -981,6 +985,7 @@ SMTP 默认只允许公网地址；部署者可通过 `[security].smtp_allowed_h
 | 404 | `NOTIFICATION_SETTINGS_NOT_FOUND` | 通知配置不存在 |
 | 404 | `LOG_NOT_FOUND` | 日志文件不存在或文件名不合法 |
 | 409 | `USER_USERNAME_CONFLICT` | 用户名已存在 |
+| 409 | `NOTIFICATION_SETTINGS_CHANGED` | DNS 校验期间通知配置被其他请求修改，需重新加载 |
 | 422 | `INVALID_REQUEST` | Path、Query 或 Body 格式/字段校验失败 |
 | 429 | `AUTH_RATE_LIMITED` | 登录失败尝试达到限流阈值 |
 | 500 | `INTERNAL_ERROR` | 未处理的服务端错误 |
@@ -1083,3 +1088,44 @@ curl -i "$BASE_URL/health"
 - 通知配置的 SMTP 主机/用户名、发件/收件邮箱最大 255 字符，发件人名称最大 128 字符，超限返回标准 422 验证响应。
 - TOML 布尔、整数、字符串类型严格校验；弃用的 `app.host`、`app.port` 被忽略并警告。`logging.level` 支持 DEBUG、INFO、WARNING、ERROR、CRITICAL，实际过滤低等级记录；失败事件可显式指定 `result="failure"`。归档跳过已轮转删除的文件，其他异常清理临时 ZIP。
 - 运行依赖移除 `python-multipart`，`httpx` 移入 `[test]`。开发测试使用 `pip install -e './backend[test]'`。无需数据库迁移或接口响应适配。
+
+## 0.1.6 运行状态与通知记录
+
+### 管理员任务状态
+
+`GET /api/v1/admin/runtime` 仅管理员（ID 0）可访问。返回 `{status, tasks}`，整体状态为 `ok / error / disabled`。每个任务包括 `id`、`name`、`status`、`running`、`next_run_at`、`last_started_at`、`last_finished_at`、`last_success_at`、`duration_seconds`、`consecutive_failures`、`last_error` 与 `counts`；时间为 UTC，尚无数据时为 null。状态包括 `waiting / running / ok / warning / error / disabled`。
+
+`/health` 保留原响应字段，调度器状态纳入任务判断：连续执行失败 3 次、未执行且超过预定时间宽限，或运行超过 `scheduler.task_timeout_seconds`（默认 900 秒）时返回 503。通知任务宽限为两倍检查间隔且至少 120 秒，日任务宽限 600 秒；正在执行且未超时的任务不按未执行逾期处理。首次执行未到时间、关闭调度均不误报。渠道失败汇总为 `counts.failed/unknown` 并显示 warning，业务检查/数据库异常计入 `counts.errors` 与连续失败。状态仅保存在本次进程内，历史执行结果写系统日志。
+
+新增过期会话任务在应用时区 `session_cleanup_hour`（默认 2）执行；按 `expires_at <= UTC 当前时间` 使用到期索引选取，每批 500 条、每轮最多 10000 条。使用短事务和跳过已锁定记录，下一轮继续清理剩余数据，保留未过期会话。
+
+### 个人通知记录
+
+`GET /api/v1/me/notification-records` 返回 `{items, page, page_size, total}`，只查询当前用户记录。参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `channel` | `email / feishu`；省略表示全部 |
+| `status` | `pending / retry_wait / sent / failed / unknown / expired` |
+| `start_date`、`end_date` | 按账户时区的计划提醒日期筛选，包含两端；倒置返回 `400 INVALID_DATE_RANGE` |
+| `page`、`page_size` | 默认 1、20；每页 1–100 条 |
+
+按 `scheduled_at DESC, id DESC` 稳定排序。每条记录包含 `id`、`plan_id`、`plan_name`、`due_date`、`channel`、`reminder_type`、`status`、`scheduled_at`、`sent_at`、`attempt_count`、`last_attempt_at`、`next_retry_at`、`error_code`、`error_message`。错误消息为安全映射，不返回原始异常、服务器响应或凭据。过去日期中仍待处理/待重试的记录展示为 `expired`，不补发。历史记录的尝试时间未知时保留 null。
+
+每个业务键只保存一条最新结果，测试发送不写账单提醒记录。删除规则仍按原语义清理今天及未来关联通知记录，记录查询不改变这项规则。
+
+### 发送与重试语义
+
+DNS 在获取数据库行锁前完成，结果限制为允许的地址并绑定连接 IP，TLS 仍验证原域名；获取锁后重新核对配置版本、用户状态、提醒窗口及规则。配置在解析期间改变时跳过本次候选，下轮重新检查。配置保存也先完成出站校验，再加锁复核版本；并发修改返回 `409 NOTIFICATION_SETTINGS_CHANGED`，客户端应重新加载。
+
+`[notifications]` 支持 `dns_timeout_seconds = 5`、`connect_timeout_seconds = 5`、`send_timeout_seconds = 30`。DNS 等待范围 1–30 秒，连接与发送范围为 `1 <= connect <= send <= 120`。DNS 最多 4 个后台解析线程、无等待队列，超时后只有解析继续，不能发送消息。发送始终在事务所在调用线程执行，网络预算耗尽时关闭所有关联套接字，使 TLS、慢速响应正文和多地址尝试受同一截止时间控制；数据库锁等待不属于网络预算。
+
+最多 3 次尝试。可重试的网络连接故障、SMTP 4xx 和 Webhook HTTP 429/5xx，在上次失败后 60/300 秒具备重试资格，下一轮检查才执行；明确拒绝或配置错误停止自动重试。消息提交后连接中断或响应不可确认则标记 `unknown` 并停止自动重发；明确的 SMTP/HTTP 拒绝仍按错误类别处理。第三次失败或下一次重试跨越原提醒日期后停止自动重试。成功记录永不重发，SMTP 已接受消息后关闭连接失败不会改判失败。进程崩溃、数据库提交失败与外部渠道无法原子提交，不能提供严格只送达一次的保证。
+
+测试发送成功仍返回 204，失败返回 400，使用与记录相同的脱敏错误码；结果未知使用 `DELIVERY_UNKNOWN`，提示先核实是否收到消息。
+
+### 升级验证
+
+迁移 `0003_notification_attempts` 增加四个字段，并按旧 `retry_count` 推导尝试次数；已发送不变，未耗尽的失败转为待重试，旧发送中转为结果未知，缺失的历史尝试时间不伪造。回滚需恢复升级前备份。
+
+本版本的回归覆盖任务状态与权限、分批清理、DNS/发送超时、重试间隔及上限、配置变更、结果未知、查询隔离；MySQL 测试验证实际迁移、重复升级、DNS 阶段无用户锁、超时后释放锁与清理/登录并发。

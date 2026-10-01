@@ -10,7 +10,10 @@ const router = vi.hoisted(() => ({ replace: vi.fn() }))
 vi.mock('vue-router', () => ({ useRoute: () => route, useRouter: () => router }))
 vi.mock('@/api/users', () => ({ listUsers: vi.fn(), getUser: vi.fn() }))
 vi.mock('@/api/logs', () => ({ getUserLogs: vi.fn(), downloadUserLog: vi.fn(), saveBlob: vi.fn() }))
-vi.mock('element-plus', () => ({ ElMessage: { error: vi.fn() } }))
+vi.mock('element-plus', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('element-plus')>()),
+  ElMessage: { error: vi.fn() },
+}))
 
 const file: LogFile = { date: '2026-09-30', filename: '2026-09-30.log', size: 10, modified_at: '' }
 
@@ -73,8 +76,8 @@ describe('UserLogsView', () => {
       vm.selectedId = 1
       vm.selectedId = 2
 
-      expect(getUserLogs).toHaveBeenNthCalledWith(1, 1)
-      expect(getUserLogs).toHaveBeenNthCalledWith(2, 2)
+      expect(getUserLogs).toHaveBeenNthCalledWith(1, 1, expect.any(AbortSignal))
+      expect(getUserLogs).toHaveBeenNthCalledWith(2, 2, expect.any(AbortSignal))
       if (kind === 'success') older.resolve([file])
       else older.reject(new ApiError({ status: 500, code: 'FAILED', message: '旧用户查询失败' }))
       await flushPromises()
@@ -163,7 +166,7 @@ describe('UserLogsView', () => {
     await flushPromises()
     expect(wrapper.find('button').element.disabled).toBe(false)
     await vm.downloadFile('new-user.log')
-    expect(downloadUserLog).toHaveBeenCalledWith(2, 'new-user.log')
+    expect(downloadUserLog).toHaveBeenCalledWith(2, 'new-user.log', expect.any(AbortSignal))
     expect(saveBlob).toHaveBeenCalledOnce()
   })
 
@@ -198,7 +201,7 @@ it('loads a linked user outside the initial search page', async () => {
   })
   const wrapper = mountView()
   await flushPromises()
-  expect(getUser).toHaveBeenCalledWith(201)
+  expect(getUser).toHaveBeenCalledWith(201, expect.any(AbortSignal))
   expect((wrapper.vm as unknown as UserLogsVm).selectedId).toBe(201)
-  expect(getUserLogs).toHaveBeenCalledWith(201)
+  expect(getUserLogs).toHaveBeenCalledWith(201, expect.any(AbortSignal))
 })

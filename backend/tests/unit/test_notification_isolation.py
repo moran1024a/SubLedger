@@ -70,6 +70,7 @@ def test_bad_rule_rolls_back_and_does_not_stop_rules_or_users(notification_datab
         return original(plan, *args)
 
     monkeypatch.setattr(notifications, "iter_plan_dates", failing_dates)
+    monkeypatch.setattr(notifications, "_prepare_delivery", lambda *args: ("smtp.example.com", []))
     monkeypatch.setattr(notifications, "_send_email", lambda *args: sent.append(args[3]))
     settings = SimpleNamespace(logging=SimpleNamespace(directory=str(tmp_path / "logs")))
     notifications.check_notifications(database, settings, None)
@@ -103,6 +104,7 @@ def test_database_rule_failure_rolls_back_without_aborting_later_notifications(n
         return original(db, settings, fernet, plan, *args)
 
     monkeypatch.setattr(notifications, "_attempt_notification", failing_attempt)
+    monkeypatch.setattr(notifications, "_prepare_delivery", lambda *args: ("smtp.example.com", []))
     monkeypatch.setattr(notifications, "_send_email", lambda *args: None)
     settings = SimpleNamespace(logging=SimpleNamespace(directory=str(tmp_path / "logs")))
     notifications.check_notifications(database, settings, None)
@@ -119,6 +121,7 @@ def test_bad_user_configuration_does_not_stop_next_user(notification_database, m
         db.get(User, 1).timezone = "invalid/timezone"
         db.commit()
     sent = []
+    monkeypatch.setattr(notifications, "_prepare_delivery", lambda *args: ("smtp.example.com", []))
     monkeypatch.setattr(notifications, "_send_email", lambda *args: sent.append(args[3]))
     settings = SimpleNamespace(logging=SimpleNamespace(directory=str(tmp_path / "logs")))
     notifications.check_notifications(database, settings, None)

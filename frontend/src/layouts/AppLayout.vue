@@ -1,4 +1,9 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/drawer/style/css'
+import 'element-plus/es/components/message/style/css'
+
+import { ElButton, ElDrawer } from 'element-plus'
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -52,7 +57,10 @@ async function logout() {
 <template>
   <div class="app-shell">
     <aside class="sidebar" :class="{ collapsed: ui.sidebarCollapsed }">
-      <div class="brand">{{ ui.sidebarCollapsed ? '订' : '订阅本' }}<small v-if="!ui.sidebarCollapsed">SubLedger</small></div>
+      <div class="brand">
+        {{ ui.sidebarCollapsed ? '订' : '订阅本'
+        }}<small v-if="!ui.sidebarCollapsed">SubLedger</small>
+      </div>
       <nav aria-label="主导航">
         <router-link
           v-for="item in menu"

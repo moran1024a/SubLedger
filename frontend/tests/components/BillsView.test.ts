@@ -10,7 +10,8 @@ import { ApiError, type BillOccurrence, type BillOccurrencePage } from '@/types/
 
 vi.mock('@/api/bills', () => ({ listBills: vi.fn(), updateBillValidity: vi.fn() }))
 vi.mock('@/api/plans', () => ({ listPlans: vi.fn() }))
-vi.mock('element-plus', () => ({
+vi.mock('element-plus', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('element-plus')>()),
   ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
   ElMessageBox: { confirm: vi.fn() },
 }))
@@ -90,6 +91,7 @@ describe('BillsView', () => {
 
     expect(listBills).toHaveBeenLastCalledWith(
       expect.objectContaining({ start_date: '', end_date: '' }),
+      expect.any(AbortSignal),
     )
   })
 
@@ -196,6 +198,7 @@ describe('bill query interactions', () => {
     await flushPromises()
     expect(listBills).toHaveBeenCalledWith(
       expect.objectContaining({ time_status: 'upcoming', sort: 'asc' }),
+      expect.any(AbortSignal),
     )
     wrapper.unmount()
   })
@@ -213,12 +216,18 @@ describe('bill query interactions', () => {
     vm.page = 2
     await vm.navigate()
     await flushPromises()
-    expect(listBills).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'cloud', page: 2 }))
+    expect(listBills).toHaveBeenLastCalledWith(
+      expect.objectContaining({ q: 'cloud', page: 2 }),
+      expect.any(AbortSignal),
+    )
     expect(vm.keyword).toBe('cloud')
     wrapper.unmount()
     mountView()
     await flushPromises()
-    expect(listBills).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'cloud', page: 2 }))
+    expect(listBills).toHaveBeenLastCalledWith(
+      expect.objectContaining({ q: 'cloud', page: 2 }),
+      expect.any(AbortSignal),
+    )
   })
 
   it('switches history to descending and reset clears even an unsubmitted draft', async () => {
@@ -230,6 +239,7 @@ describe('bill query interactions', () => {
     await flushPromises()
     expect(listBills).toHaveBeenLastCalledWith(
       expect.objectContaining({ time_status: 'passed', sort: 'desc' }),
+      expect.any(AbortSignal),
     )
     vm.reset()
     await flushPromises()
@@ -239,6 +249,7 @@ describe('bill query interactions', () => {
     expect(vm.keyword).toBe('')
     expect(listBills).toHaveBeenLastCalledWith(
       expect.objectContaining({ time_status: 'upcoming', sort: 'asc', q: '' }),
+      expect.any(AbortSignal),
     )
   })
 
@@ -261,6 +272,9 @@ describe('bill query interactions', () => {
     await flushPromises()
     expect((wrapper.vm as unknown as BillsVm).page).toBe(2)
     expect(router.currentRoute.value.query.page).toBe('2')
-    expect(listBills).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, sort: 'desc' }))
+    expect(listBills).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 2, sort: 'desc' }),
+      expect.any(AbortSignal),
+    )
   })
 })

@@ -16,18 +16,19 @@ export function changePassword(current_password: string, new_password: string) {
 
 export function listUsers(
   filters: { q?: string; is_active?: boolean; page?: number; page_size?: number } = {},
+  signal?: AbortSignal,
 ) {
   const query = new URLSearchParams()
   Object.entries(filters).forEach(([key, value]) => {
     if (value !== undefined && value !== '') query.set(key, String(value))
   })
-  return request<UserPage>(`/admin/users?${query.toString()}`)
+  return request<UserPage>(`/admin/users?${query.toString()}`, { signal })
 }
-export function getAdminSummary() {
-  return request<AdminSummary>('/admin/summary')
+export function getAdminSummary(signal?: AbortSignal) {
+  return request<AdminSummary>('/admin/summary', { signal })
 }
-export function getUser(id: number) {
-  return request<CurrentUser>(`/admin/users/${id}`)
+export function getUser(id: number, signal?: AbortSignal) {
+  return request<CurrentUser>(`/admin/users/${id}`, { signal })
 }
 export function createUser(payload: {
   username: string
@@ -61,6 +62,10 @@ export function enableUser(id: number) {
   return request<CurrentUser>(`/admin/users/${id}/enable`, { method: 'POST' })
 }
 
-export function getHealth() {
-  return requestRoot<import('@/types/api').HealthResponse>('/health', {}, [503])
+export function getHealth(signal?: AbortSignal) {
+  return requestRoot<import('@/types/api').HealthResponse>('/health', { signal }, [503])
+}
+
+export function getRuntime(signal?: AbortSignal) {
+  return request<import('@/types/api').RuntimeResponse>('/admin/runtime', { signal })
 }

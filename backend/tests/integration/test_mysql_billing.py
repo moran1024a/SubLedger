@@ -156,6 +156,7 @@ def test_notification_rechecks_record_sent_after_snapshot(mysql_sessions, monkey
         db.commit()
         record_id = record.id
     sent = []
+    monkeypatch.setattr(notifications, "_prepare_delivery", lambda *args: ("smtp.example.com", []))
     monkeypatch.setattr(notifications, "_send_email", lambda *args: sent.append("email"))
     with mysql_sessions() as stale:
         plan = establish_request_snapshot(stale, plan_id)
@@ -323,3 +324,139 @@ def test_bill_completion_locks_user_before_child_inserts(mysql_sessions):
                 changing_user.scalar(select(User).where(User.id == 1).with_for_update(nowait=True))
             assert caught.value.orig.args[0] == 3572
         billing.commit()
+
+
+def test_016_migration_preserves_attempts_and_sent_records(mysql_sessions):
+    from pathlib import Path
+    from alembic import command
+    from alembic.config import Config
+    engine = mysql_sessions.kw['bind']
+    Base.metadata.drop_all(engine)
+    config = Config(str(Path(__file__).resolve().parents[2] / 'alembic.ini'))
+    with engine.begin() as connection:
+        config.attributes['connection'] = connection
+        command.upgrade(config, '0002_add_bill_plan_deleted_at')
+    with mysql_sessions() as db:
+        db.add(User(id=1, username='migration', password_hash='unused', role='user', is_active=True, timezone='UTC', currency_code='CNY', created_at=NOW, updated_at=NOW))
+        db.flush()
+        db.add(BillPlan(id=1, user_id=1, name='migration', amount=1, cycle_type='once', first_due_date=TODAY, is_enabled=True, created_at=NOW, updated_at=NOW))
+        db.flush()
+        for index, (status, count) in enumerate([('sent', 2), ('failed', 1), ('sending', 0), ('failed', 3)]):
+            db.execute(text("INSERT INTO notification_records (user_id,plan_id,due_date,channel,reminder_type,status,scheduled_at,retry_count) VALUES (1,1,:day,'email','same_day',:status,:now,:count)"), dict(day=date(2026, 9, 1+index), status=status, now=NOW, count=count))
+        db.commit()
+    with engine.begin() as connection:
+        config.attributes['connection'] = connection
+        command.upgrade(config, 'head')
+        command.upgrade(config, 'head')
+    with mysql_sessions() as db:
+        records = list(db.scalars(select(NotificationRecord).order_by(NotificationRecord.id)))
+        assert [(r.status, r.attempt_count) for r in records] == [('sent', 3), ('retry_wait', 1), ('unknown', 1), ('failed', 3)]
+        assert all(r.last_attempt_at is None for r in records)
+        assert records[1].next_retry_at == NOW
+        assert db.scalar(text('SELECT version_num FROM alembic_version')) == '0003_notification_attempts'
+
+
+def test_016_dns_preparation_does_not_hold_user_lock(mysql_sessions, monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from app.services.users import utc_now
+    current = utc_now()
+    plan_id, _ = seed(mysql_sessions)
+    with mysql_sessions() as db:
+        db.get(BillPlan, plan_id).first_due_date = current.date()
+        db.commit()
+    entered, proceed = Event(), Event()
+    def prepare(*args):
+        entered.set()
+        assert proceed.wait(5)
+        return 'smtp.test', []
+    monkeypatch.setattr(notifications, '_prepare_delivery', prepare)
+    sent = []
+    monkeypatch.setattr(notifications, '_send_email', lambda *args: sent.append(1))
+    def attempt():
+        with mysql_sessions() as db:
+            notifications._attempt_notification(db, SimpleNamespace(logging=SimpleNamespace(directory=str(tmp_path))), None, db.get(BillPlan, plan_id), current.date(), 'email', 'same_day', datetime.combine(current.date(), time(0)))
+            db.commit()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(attempt)
+        try:
+            assert entered.wait(5)
+            with mysql_sessions() as db:
+                user = db.scalar(select(User).where(User.id == 1).with_for_update(nowait=True))
+                user.is_active = False
+                db.commit()
+        finally:
+            proceed.set()
+        future.result(timeout=5)
+    assert sent == []
+
+
+def test_016_send_timeout_releases_user_lock(mysql_sessions, tmp_path):
+    import socket
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Thread
+    from app.config import NotificationConfig
+    from app.services.users import lock_user, utc_now
+    current = utc_now()
+    plan_id, _ = seed(mysql_sessions)
+    server = socket.socket()
+    server.bind(('127.0.0.1', 0))
+    server.listen(1)
+    server.settimeout(5)
+    connected = Event()
+    closed = Event()
+    def accept():
+        conn, _ = server.accept()
+        with conn:
+            connected.set()
+            conn.settimeout(5)
+            assert conn.recv(1024) == b''
+            closed.set()
+    thread = Thread(target=accept, daemon=True)
+    thread.start()
+    with mysql_sessions() as db:
+        db.get(BillPlan, plan_id).first_due_date = current.date()
+        setting = db.get(NotificationSetting, 1)
+        setting.smtp_host, setting.smtp_port, setting.smtp_security = '127.0.0.1', server.getsockname()[1], 'none'
+        setting.sender_email, setting.recipient_email = 'sender@example.com', 'receiver@example.com'
+        db.commit()
+    settings = SimpleNamespace(logging=SimpleNamespace(directory=str(tmp_path)), security=SimpleNamespace(smtp_allow_private_hosts=['127.0.0.1']), notifications=NotificationConfig(send_timeout_seconds=0.2, connect_timeout_seconds=0.1))
+    def attempt():
+        with mysql_sessions() as db:
+            result = notifications._attempt_notification(db, settings, None, db.get(BillPlan, plan_id), current.date(), 'email', 'same_day', datetime.combine(current.date(), time(0)))
+            db.commit()
+            return result
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(attempt)
+            assert connected.wait(5)
+            with mysql_sessions() as db:
+                lock_user(db, 1).is_active = False
+                db.commit()
+            assert future.result(timeout=5) == 'failed'
+            assert closed.wait(2)
+        with mysql_sessions() as db:
+            record = db.scalar(select(NotificationRecord))
+            assert record.status == 'retry_wait' and record.attempt_count == 1
+    finally:
+        server.close()
+        thread.join(5)
+
+
+def test_016_expired_cleanup_preserves_concurrent_login(mysql_sessions, monkeypatch):
+    from app.models import SessionRecord
+    from app.services.auth import cleanup_expired_sessions, create_session
+    from datetime import timedelta
+    from app.services.users import utc_now
+    seed(mysql_sessions)
+    now = utc_now()
+    with mysql_sessions() as db:
+        db.add(SessionRecord(user_id=1, token_hash='expired', created_at=now, expires_at=now-timedelta(days=1)))
+        db.commit()
+    with mysql_sessions() as login:
+        create_session(login, login.get(User, 1), 7)
+        assert cleanup_expired_sessions(SimpleNamespace(session=mysql_sessions)) == 1
+        login.commit()
+    with mysql_sessions() as db:
+        assert db.scalar(select(func.count(SessionRecord.id))) == 1
+        assert db.scalar(select(SessionRecord.expires_at)) > now

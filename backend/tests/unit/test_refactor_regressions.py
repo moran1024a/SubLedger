@@ -85,7 +85,7 @@ def test_disabled_user_and_channel_stop_remaining_notifications(tmp_path, change
                     other.execute(update(NotificationSetting).where(NotificationSetting.user_id==1).values(**values))
                 other.commit()
     settings=SimpleNamespace(logging=SimpleNamespace(directory=str(tmp_path/'logs')))
-    with patch.object(notifications,'_send_email',side_effect=lambda *args:sent.append(args[3])):
+    with patch.object(notifications, '_prepare_delivery', return_value=('smtp.example.com', [])), patch.object(notifications,'_send_email',side_effect=lambda *args:sent.append(args[3])):
         notifications.check_notifications(SimpleNamespace(session=factory),settings,None)
     assert len(sent)==1
     engine.dispose()

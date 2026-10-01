@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import 'element-plus/es/components/card/style/css'
+import 'element-plus/es/components/message/style/css'
+
+import { ElCard } from 'element-plus'
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'

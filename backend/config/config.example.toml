@@ -24,6 +24,14 @@ bill_check_hour = 0
 bill_check_minute = 5
 notification_interval_seconds = 60
 log_cleanup_hour = 1
+session_cleanup_hour = 2
+# 任务运行超过此时长会使健康检查降级，不会强行中断数据库操作。
+task_timeout_seconds = 900
+
+[notifications]
+dns_timeout_seconds = 5
+connect_timeout_seconds = 5
+send_timeout_seconds = 30
 
 [logging]
 # 直接运行时相对于 backend/ 目录；Docker 中对应 /app/logs。

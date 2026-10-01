@@ -1,10 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import {
-  download,
-  request,
-  setForbiddenHandler,
-  setUnauthorizedHandler,
-} from '@/api/client'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { download, request, setForbiddenHandler, setUnauthorizedHandler } from '@/api/client'
 
 beforeEach(() => {
   vi.unstubAllGlobals()
@@ -69,7 +64,10 @@ describe('api client', () => {
 
     await expect(request('/auth/me')).rejects.toMatchObject({ status: 401 })
     await expect(request('/admin/users')).rejects.toMatchObject({ status: 403 })
-    expect(unauthorized).toHaveBeenCalledWith(expect.objectContaining({ status: 401 }), '/api/v1/auth/me')
+    expect(unauthorized).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 401 }),
+      '/api/v1/auth/me',
+    )
     expect(forbidden).toHaveBeenCalledWith(
       expect.objectContaining({ status: 403 }),
       '/api/v1/admin/users',
@@ -109,6 +107,119 @@ describe('api client', () => {
       ),
     )
 
-    await expect(download('/me/logs/download')).resolves.toMatchObject({ filename: 'user logs.zip' })
+    await expect(download('/me/logs/download')).resolves.toMatchObject({
+      filename: 'user logs.zip',
+    })
+  })
+})
+
+describe('request deadlines and cancellation', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    setUnauthorizedHandler(undefined as never)
+    setForbiddenHandler(undefined as never)
+  })
+
+  it('times out while reading a response body, not only waiting for headers', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url, init) =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          text: () =>
+            new Promise((_resolve, reject) => {
+              init.signal.addEventListener('abort', () =>
+                reject(new DOMException('Aborted', 'AbortError')),
+              )
+            }),
+        }),
+      ),
+    )
+    const { request } = await import('@/api/client')
+    const result = expect(request('/slow', { timeoutMs: 20 })).rejects.toMatchObject({
+      code: 'REQUEST_TIMEOUT',
+    })
+    await vi.advanceTimersByTimeAsync(21)
+    await result
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('marks write timeout as uncertain and sends only once', async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () =>
+            reject(new DOMException('Aborted', 'AbortError')),
+          )
+        }),
+    )
+    vi.stubGlobal('fetch', fetch)
+    const result = expect(
+      request('/plans', { method: 'POST', body: '{}', timeoutMs: 20 }),
+    ).rejects.toMatchObject({
+      code: 'REQUEST_TIMEOUT',
+      message: expect.stringContaining('结果待确认'),
+    })
+    await vi.advanceTimersByTimeAsync(21)
+    await result
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('suppresses an old 401 body after a caller cancels the request', async () => {
+    const unauthorized = vi.fn()
+    setUnauthorizedHandler(unauthorized)
+    let complete!: (value: string) => void
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        headers: new Headers(),
+        text: () =>
+          new Promise<string>((resolve) => {
+            complete = resolve
+          }),
+      }),
+    )
+    const controller = new AbortController()
+    const result = expect(request('/plans', { signal: controller.signal })).rejects.toMatchObject({
+      code: 'REQUEST_CANCELLED',
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    controller.abort()
+    complete('{}')
+    await result
+    expect(unauthorized).not.toHaveBeenCalled()
+  })
+
+  it('times out downloads while consuming the blob', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url, init) =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          blob: () =>
+            new Promise((_resolve, reject) => {
+              init.signal.addEventListener('abort', () =>
+                reject(new DOMException('Aborted', 'AbortError')),
+              )
+            }),
+        }),
+      ),
+    )
+    const result = expect(download('/logs', { timeoutMs: 20 })).rejects.toMatchObject({
+      code: 'REQUEST_TIMEOUT',
+    })
+    await vi.advanceTimersByTimeAsync(21)
+    await result
   })
 })

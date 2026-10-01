@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/result/style/css'
+
+import { ElButton, ElResult } from 'element-plus'
 defineProps<{ message?: string; requestId?: string }>()
 defineEmits<{ retry: [] }>()
 </script>

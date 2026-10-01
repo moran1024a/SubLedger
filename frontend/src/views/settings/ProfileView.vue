@@ -1,4 +1,24 @@
 <script setup lang="ts">
+import 'element-plus/es/components/alert/style/css'
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/card/style/css'
+import 'element-plus/es/components/form/style/css'
+import 'element-plus/es/components/form-item/style/css'
+import 'element-plus/es/components/input/style/css'
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/option/style/css'
+import 'element-plus/es/components/select/style/css'
+
+import {
+  ElAlert,
+  ElButton,
+  ElCard,
+  ElForm,
+  ElFormItem,
+  ElInput,
+  ElOption,
+  ElSelect,
+} from 'element-plus'
 import { timezones, currencies } from '@/utils/profileOptions'
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'

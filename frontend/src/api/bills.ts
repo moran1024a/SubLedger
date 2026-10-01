@@ -13,12 +13,12 @@ export interface BillFilters {
   page_size?: number
 }
 
-export function listBills(filters: BillFilters = {}) {
+export function listBills(filters: BillFilters = {}, signal?: AbortSignal) {
   const query = new URLSearchParams()
   Object.entries(filters).forEach(([key, value]) => {
     if (value !== null && value !== undefined && value !== '') query.set(key, String(value))
   })
-  return request<BillOccurrencePage>(`/bills?${query.toString()}`)
+  return request<BillOccurrencePage>(`/bills?${query.toString()}`, { signal })
 }
 
 export function updateBillValidity(id: number, isValid: boolean) {

@@ -1,4 +1,9 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/table/style/css'
+import 'element-plus/es/components/table-column/style/css'
+
+import { ElButton, ElTable, ElTableColumn } from 'element-plus'
 import type { LogFile } from '@/types/api'
 import { formatDateTime, formatFileSize } from '@/utils/format'
 defineProps<{ files: LogFile[]; downloading?: string | null }>()

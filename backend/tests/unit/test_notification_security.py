@@ -107,6 +107,9 @@ class FakeSocket:
         self.sent = []
         self.closed = False
 
+    def do_handshake(self):
+        pass
+
     def settimeout(self, value):
         self.timeout = value
 
@@ -133,7 +136,7 @@ class FakeContext:
     def __init__(self):
         self.hosts = []
 
-    def wrap_socket(self, sock, *, server_hostname):
+    def wrap_socket(self, sock, *, server_hostname, **kwargs):
         self.hosts.append(server_hostname)
         return sock
 

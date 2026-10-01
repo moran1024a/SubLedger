@@ -7,6 +7,7 @@ export default defineConfig({
   resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
   test: {
     environment: 'jsdom',
+    server: { deps: { inline: ['element-plus'] } },
     globals: true,
     include: ['tests/**/*.test.ts'],
     setupFiles: ['tests/setup.ts'],

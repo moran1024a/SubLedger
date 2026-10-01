@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/card/style/css'
+
+import { ElButton, ElCard } from 'element-plus'
 import { onMounted } from 'vue'
 import { downloadSystemLog, getSystemLogs } from '@/api/logs'
 import { useLogFiles } from '@/composables/useLogFiles'

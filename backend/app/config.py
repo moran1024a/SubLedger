@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import get_type_hints
 
 try:
@@ -47,6 +47,8 @@ class SchedulerConfig:
     bill_check_minute: int
     notification_interval_seconds: int
     log_cleanup_hour: int
+    session_cleanup_hour: int = 2
+    task_timeout_seconds: int = 900
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,13 @@ class BootstrapAdminConfig:
 
 
 @dataclass(frozen=True)
+class NotificationConfig:
+    dns_timeout_seconds: int = 5
+    connect_timeout_seconds: int = 5
+    send_timeout_seconds: int = 30
+
+
+@dataclass(frozen=True)
 class Settings:
     app: AppConfig
     database: DatabaseConfig
@@ -80,6 +89,7 @@ class Settings:
     security: SecurityConfig
     bootstrap_admin: BootstrapAdminConfig
     config_path: Path
+    notifications: NotificationConfig = field(default_factory=NotificationConfig)
 
 
 def _require(data: dict, section: str, key: str):
@@ -136,6 +146,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
         "logging": LoggingConfig,
         "security": SecurityConfig,
         "bootstrap_admin": BootstrapAdminConfig,
+        "notifications": NotificationConfig,
     }
     for section, cls in expected.items():
         values = data.get(section, {})
@@ -174,6 +185,8 @@ def load_settings(path: str | Path | None = None) -> Settings:
             data.get("scheduler", {}).get("notification_interval_seconds", 60)
         ),
         log_cleanup_hour=int(data.get("scheduler", {}).get("log_cleanup_hour", 1)),
+        session_cleanup_hour=data.get("scheduler", {}).get("session_cleanup_hour", 2),
+        task_timeout_seconds=data.get("scheduler", {}).get("task_timeout_seconds", 900),
     )
     logging = LoggingConfig(
         directory=str(data.get("logging", {}).get("directory", "/app/logs")),
@@ -199,6 +212,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
         security=security,
         bootstrap_admin=bootstrap_admin,
         config_path=config_path,
+        notifications=NotificationConfig(**{key: data.get("notifications", {}).get(key, default) for key, default in (("dns_timeout_seconds", 5), ("connect_timeout_seconds", 5), ("send_timeout_seconds", 30))}),
     )
     validate_settings(settings)
     return settings
@@ -231,6 +245,13 @@ def validate_settings(settings: Settings) -> None:
         raise ConfigError("scheduler.bill_check_minute must be between 0 and 59")
     if not 0 <= settings.scheduler.log_cleanup_hour <= 23:
         raise ConfigError("scheduler.log_cleanup_hour must be between 0 and 23")
+    if not 0 <= settings.scheduler.session_cleanup_hour <= 23:
+        raise ConfigError("scheduler.session_cleanup_hour must be between 0 and 23")
+    if settings.scheduler.task_timeout_seconds < 60:
+        raise ConfigError("scheduler.task_timeout_seconds must be at least 60")
+    notice = settings.notifications
+    if not 1 <= notice.dns_timeout_seconds <= 30 or not 1 <= notice.connect_timeout_seconds <= notice.send_timeout_seconds <= 120:
+        raise ConfigError("notification timeouts are invalid (DNS 1-30, connect <= send <= 120 seconds)")
     if not settings.security.cookie_name.strip():
         raise ConfigError("security.cookie_name must not be empty")
     if not settings.bootstrap_admin.username.strip() or not settings.bootstrap_admin.password:

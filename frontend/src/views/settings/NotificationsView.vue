@@ -1,4 +1,33 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/card/style/css'
+import 'element-plus/es/components/form/style/css'
+import 'element-plus/es/components/form-item/style/css'
+import 'element-plus/es/components/input/style/css'
+import 'element-plus/es/components/input-number/style/css'
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/option/style/css'
+import 'element-plus/es/components/radio-button/style/css'
+import 'element-plus/es/components/radio-group/style/css'
+import 'element-plus/es/components/select/style/css'
+import 'element-plus/es/components/switch/style/css'
+import 'element-plus/es/components/time-picker/style/css'
+
+import {
+  ElButton,
+  ElCard,
+  ElForm,
+  ElFormItem,
+  ElInput,
+  ElInputNumber,
+  ElOption,
+  ElRadioButton,
+  ElRadioGroup,
+  ElSelect,
+  ElSwitch,
+  ElTimePicker,
+} from 'element-plus'
+import { useQueryRequest } from '@/composables/useQueryRequest'
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
@@ -12,10 +41,12 @@ import { timeToApi, timeToMinutes } from '@/utils/format'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { asApiError, getFieldErrors } from '@/utils/apiErrors'
 import { validateNotificationSettings } from '@/utils/validation'
+import NotificationRecords from '@/components/notifications/NotificationRecords.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingBlock from '@/components/common/LoadingBlock.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
 
+const tab = ref('settings')
 const loading = ref(true)
 const saving = ref(false)
 const testing = ref<'email' | 'feishu' | null>(null)
@@ -89,15 +120,20 @@ watch(
   },
   { deep: true },
 )
+const queryRequests = useQueryRequest()
 async function load() {
+  const signal = queryRequests.next()
   loading.value = true
   error.value = null
   try {
-    fill(await getNotificationSettings())
+    const result = await getNotificationSettings(signal)
+    if (signal.aborted) return
+    fill(result)
   } catch (cause) {
+    if (signal.aborted) return
     error.value = asApiError(cause, '无法连接服务器，请检查网络或服务状态。')
   } finally {
-    loading.value = false
+    if (!signal.aborted) loading.value = false
   }
 }
 function payload(): NotificationPayload {
@@ -161,6 +197,7 @@ onMounted(load)
     <PageHeader title="通知设置" description="配置提醒规则和通知渠道"
       ><template #actions
         ><el-button
+          v-if="tab === 'settings'"
           type="primary"
           :loading="saving"
           :disabled="loading || error !== null || loaded === null || testing !== null"
@@ -168,110 +205,123 @@ onMounted(load)
           >保存设置</el-button
         ></template
       ></PageHeader
-    ><LoadingBlock v-if="loading" /><ErrorState
-      v-else-if="error"
-      :message="error.message"
-      :request-id="error.requestId"
-      @retry="load"
-    /><el-form v-else label-position="top" class="notification-form"
-      ><el-card class="content-card"
-        ><template #header>提醒规则</template>
-        <div class="rule-grid">
-          <el-form-item label="提前提醒"><el-switch v-model="form.advance_enabled" /></el-form-item
-          ><el-form-item label="提前天数" :error="fieldErrors.advance_days"
-            ><el-input-number
-              v-model="form.advance_days"
-              :disabled="!form.advance_enabled"
-              :min="0"
-              :max="365" /></el-form-item
-          ><el-form-item label="提前提醒时间" :error="fieldErrors.advance_time"
-            ><el-time-picker
-              v-model="form.advance_time"
-              value-format="HH:mm"
-              format="HH:mm"
-              :disabled="!form.advance_enabled" /></el-form-item
-          ><el-form-item label="当日提醒"
-            ><el-switch v-model="form.same_day_enabled" /></el-form-item
-          ><el-form-item label="当日提醒时间" :error="fieldErrors.same_day_time"
-            ><el-time-picker
-              v-model="form.same_day_time"
-              value-format="HH:mm"
-              format="HH:mm"
-              :disabled="!form.same_day_enabled"
-          /></el-form-item></div></el-card
-      ><el-card class="content-card"
-        ><template #header>邮件通知</template
-        ><el-form-item label="启用邮件通知"
-          ><el-switch v-model="form.email_enabled"
-        /></el-form-item>
-        <div class="form-grid">
-          <el-form-item label="SMTP 主机" :error="fieldErrors.smtp_host"
-            ><el-input v-model="form.smtp_host" :disabled="!form.email_enabled" /></el-form-item
-          ><el-form-item label="SMTP 端口" :error="fieldErrors.smtp_port"
-            ><el-input-number
-              v-model="form.smtp_port"
-              :disabled="!form.email_enabled"
-              :min="1"
-              :max="65535" /></el-form-item
-          ><el-form-item label="加密方式" :error="fieldErrors.smtp_security"
-            ><el-select
-              v-model="form.smtp_security"
-              :disabled="!form.email_enabled"
-              style="width: 100%"
-              ><el-option label="无加密" value="none" /><el-option
-                label="STARTTLS"
-                value="starttls" /><el-option
-                label="SSL/TLS"
-                value="ssl" /></el-select></el-form-item
-          ><el-form-item label="SMTP 用户名"
-            ><el-input v-model="form.smtp_username" :disabled="!form.email_enabled" /></el-form-item
-          ><el-form-item label="SMTP 密码/授权码"
+    >
+    <el-radio-group v-model="tab" class="content-card"
+      ><el-radio-button value="settings">通知设置</el-radio-button
+      ><el-radio-button value="records">通知记录</el-radio-button></el-radio-group
+    >
+    <NotificationRecords v-if="tab === 'records'" />
+    <div v-show="tab === 'settings'">
+      <LoadingBlock v-if="loading" /><ErrorState
+        v-else-if="error"
+        :message="error.message"
+        :request-id="error.requestId"
+        @retry="load"
+      /><el-form v-else label-position="top" class="notification-form"
+        ><el-card class="content-card"
+          ><template #header>提醒规则</template>
+          <div class="rule-grid">
+            <el-form-item label="提前提醒"
+              ><el-switch v-model="form.advance_enabled" /></el-form-item
+            ><el-form-item label="提前天数" :error="fieldErrors.advance_days"
+              ><el-input-number
+                v-model="form.advance_days"
+                :disabled="!form.advance_enabled"
+                :min="0"
+                :max="365" /></el-form-item
+            ><el-form-item label="提前提醒时间" :error="fieldErrors.advance_time"
+              ><el-time-picker
+                v-model="form.advance_time"
+                value-format="HH:mm"
+                format="HH:mm"
+                :disabled="!form.advance_enabled" /></el-form-item
+            ><el-form-item label="当日提醒"
+              ><el-switch v-model="form.same_day_enabled" /></el-form-item
+            ><el-form-item label="当日提醒时间" :error="fieldErrors.same_day_time"
+              ><el-time-picker
+                v-model="form.same_day_time"
+                value-format="HH:mm"
+                format="HH:mm"
+                :disabled="!form.same_day_enabled"
+            /></el-form-item></div></el-card
+        ><el-card class="content-card"
+          ><template #header>邮件通知</template
+          ><el-form-item label="启用邮件通知"
+            ><el-switch v-model="form.email_enabled"
+          /></el-form-item>
+          <div class="form-grid">
+            <el-form-item label="SMTP 主机" :error="fieldErrors.smtp_host"
+              ><el-input v-model="form.smtp_host" :disabled="!form.email_enabled" /></el-form-item
+            ><el-form-item label="SMTP 端口" :error="fieldErrors.smtp_port"
+              ><el-input-number
+                v-model="form.smtp_port"
+                :disabled="!form.email_enabled"
+                :min="1"
+                :max="65535" /></el-form-item
+            ><el-form-item label="加密方式" :error="fieldErrors.smtp_security"
+              ><el-select
+                v-model="form.smtp_security"
+                :disabled="!form.email_enabled"
+                style="width: 100%"
+                ><el-option label="无加密" value="none" /><el-option
+                  label="STARTTLS"
+                  value="starttls" /><el-option
+                  label="SSL/TLS"
+                  value="ssl" /></el-select></el-form-item
+            ><el-form-item label="SMTP 用户名"
+              ><el-input
+                v-model="form.smtp_username"
+                :disabled="!form.email_enabled" /></el-form-item
+            ><el-form-item label="SMTP 密码/授权码"
+              ><el-input
+                v-model="form.smtp_password"
+                type="password"
+                show-password
+                :placeholder="loaded?.smtp_password_configured ? '已配置，留空保持不变' : '未配置'"
+                :disabled="!form.email_enabled" /></el-form-item
+            ><el-form-item label="发件邮箱" :error="fieldErrors.sender_email"
+              ><el-input
+                v-model="form.sender_email"
+                :disabled="!form.email_enabled" /></el-form-item
+            ><el-form-item label="发件人名称"
+              ><el-input v-model="form.sender_name" :disabled="!form.email_enabled" /></el-form-item
+            ><el-form-item label="收件人邮箱" :error="fieldErrors.recipient_email"
+              ><el-input v-model="form.recipient_email" :disabled="!form.email_enabled"
+            /></el-form-item>
+          </div>
+          <el-button
+            :disabled="!canTestEmail || dirty || saving || testing !== null"
+            :loading="testing === 'email'"
+            @click="test('email')"
+            >测试邮件</el-button
+          ></el-card
+        ><el-card class="content-card"
+          ><template #header>飞书通知</template
+          ><el-form-item label="启用飞书通知"
+            ><el-switch v-model="form.feishu_enabled" /></el-form-item
+          ><el-form-item label="Webhook" :error="fieldErrors.feishu_webhook"
             ><el-input
-              v-model="form.smtp_password"
+              v-model="form.feishu_webhook"
               type="password"
               show-password
-              :placeholder="loaded?.smtp_password_configured ? '已配置，留空保持不变' : '未配置'"
-              :disabled="!form.email_enabled" /></el-form-item
-          ><el-form-item label="发件邮箱" :error="fieldErrors.sender_email"
-            ><el-input v-model="form.sender_email" :disabled="!form.email_enabled" /></el-form-item
-          ><el-form-item label="发件人名称"
-            ><el-input v-model="form.sender_name" :disabled="!form.email_enabled" /></el-form-item
-          ><el-form-item label="收件人邮箱" :error="fieldErrors.recipient_email"
-            ><el-input v-model="form.recipient_email" :disabled="!form.email_enabled"
-          /></el-form-item>
-        </div>
-        <el-button
-          :disabled="!canTestEmail || dirty || saving || testing !== null"
-          :loading="testing === 'email'"
-          @click="test('email')"
-          >测试邮件</el-button
-        ></el-card
-      ><el-card class="content-card"
-        ><template #header>飞书通知</template
-        ><el-form-item label="启用飞书通知"
-          ><el-switch v-model="form.feishu_enabled" /></el-form-item
-        ><el-form-item label="Webhook" :error="fieldErrors.feishu_webhook"
-          ><el-input
-            v-model="form.feishu_webhook"
-            type="password"
-            show-password
-            :placeholder="loaded?.feishu_webhook_configured ? '已配置，留空保持不变' : '未配置'"
-            :disabled="!form.feishu_enabled" /></el-form-item
-        ><el-form-item label="签名密钥"
-          ><el-input
-            v-model="form.feishu_secret"
-            type="password"
-            show-password
-            :placeholder="loaded?.feishu_secret_configured ? '已配置，留空保持不变' : '未配置'"
-            :disabled="!form.feishu_enabled" /></el-form-item
-        ><el-button
-          :disabled="!canTestFeishu || dirty || saving || testing !== null"
-          :loading="testing === 'feishu'"
-          @click="test('feishu')"
-          >测试飞书</el-button
-        ></el-card
-      ></el-form
-    >
+              :placeholder="loaded?.feishu_webhook_configured ? '已配置，留空保持不变' : '未配置'"
+              :disabled="!form.feishu_enabled" /></el-form-item
+          ><el-form-item label="签名密钥"
+            ><el-input
+              v-model="form.feishu_secret"
+              type="password"
+              show-password
+              :placeholder="loaded?.feishu_secret_configured ? '已配置，留空保持不变' : '未配置'"
+              :disabled="!form.feishu_enabled" /></el-form-item
+          ><el-button
+            :disabled="!canTestFeishu || dirty || saving || testing !== null"
+            :loading="testing === 'feishu'"
+            @click="test('feishu')"
+            >测试飞书</el-button
+          ></el-card
+        ></el-form
+      >
+    </div>
   </div>
 </template>
 

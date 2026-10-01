@@ -1,4 +1,10 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/card/style/css'
+import 'element-plus/es/components/empty/style/css'
+
+import { ElButton, ElCard, ElEmpty } from 'element-plus'
+import { useQueryRequest } from '@/composables/useQueryRequest'
 import { asApiError } from '@/utils/apiErrors'
 import { onMounted, ref } from 'vue'
 import { getSummary } from '@/api/statistics'
@@ -13,15 +19,20 @@ const auth = useAuthStore()
 const data = ref<StatisticsResponse | null>(null)
 const loading = ref(true)
 const error = ref<ApiError | null>(null)
+const queryRequests = useQueryRequest()
 async function load() {
+  const signal = queryRequests.next()
   loading.value = true
   error.value = null
   try {
-    data.value = await getSummary()
+    const result = await getSummary(signal)
+    if (signal.aborted) return
+    data.value = result
   } catch (cause) {
+    if (signal.aborted) return
     error.value = asApiError(cause, '无法连接服务器，请检查网络或服务状态。')
   } finally {
-    loading.value = false
+    if (!signal.aborted) loading.value = false
   }
 }
 onMounted(load)

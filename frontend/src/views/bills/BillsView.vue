@@ -1,4 +1,34 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/card/style/css'
+import 'element-plus/es/components/date-picker/style/css'
+import 'element-plus/es/components/input/style/css'
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
+import 'element-plus/es/components/option/style/css'
+import 'element-plus/es/components/pagination/style/css'
+import 'element-plus/es/components/radio-button/style/css'
+import 'element-plus/es/components/radio-group/style/css'
+import 'element-plus/es/components/select/style/css'
+import 'element-plus/es/components/table/style/css'
+import 'element-plus/es/components/table-column/style/css'
+import 'element-plus/es/components/tag/style/css'
+
+import {
+  ElButton,
+  ElCard,
+  ElDatePicker,
+  ElInput,
+  ElOption,
+  ElPagination,
+  ElRadioButton,
+  ElRadioGroup,
+  ElSelect,
+  ElTable,
+  ElTableColumn,
+  ElTag,
+} from 'element-plus'
+import { useQueryRequest } from '@/composables/useQueryRequest'
 import { asApiError } from '@/utils/apiErrors'
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -51,23 +81,28 @@ function cycleText(bill: BillOccurrence) {
   if (bill.cycle_type === 'custom_days' && bill.cycle_days === null) return '自定义天数'
   return formatCycle(bill.cycle_type, bill.cycle_days)
 }
+const queryRequests = useQueryRequest()
 async function load() {
+  const signal = queryRequests.next()
   const sequence = ++requestSequence
   loading.value = true
   error.value = null
   try {
-    const result = await listBills({
-      page: page.value,
-      page_size: pageSize.value,
-      start_date: applied.start_date,
-      end_date: applied.end_date,
-      time_status: applied.time_status === 'all' ? undefined : applied.time_status,
-      sort: applied.sort,
-      q: applied.q,
-      is_valid: applied.is_valid === '' ? undefined : applied.is_valid === 'true',
-      plan_id: applied.plan_id,
-    })
-    if (sequence !== requestSequence) return
+    const result = await listBills(
+      {
+        page: page.value,
+        page_size: pageSize.value,
+        start_date: applied.start_date,
+        end_date: applied.end_date,
+        time_status: applied.time_status === 'all' ? undefined : applied.time_status,
+        sort: applied.sort,
+        q: applied.q,
+        is_valid: applied.is_valid === '' ? undefined : applied.is_valid === 'true',
+        plan_id: applied.plan_id,
+      },
+      signal,
+    )
+    if (signal.aborted || sequence !== requestSequence) return
     total.value = result.total
     const lastPage = Math.max(1, Math.ceil(result.total / pageSize.value))
     if (page.value > lastPage) {
@@ -77,13 +112,14 @@ async function load() {
     }
     bills.value = result.items
   } catch (cause) {
-    if (sequence !== requestSequence) return
+    if (signal.aborted || sequence !== requestSequence) return
     error.value = asApiError(cause, '无法连接服务器，请检查网络或服务状态。')
   } finally {
-    if (sequence === requestSequence) loading.value = false
+    if (!signal.aborted && sequence === requestSequence) loading.value = false
   }
 }
 async function navigate(replace = false) {
+  queryRequests.cancel()
   ++requestSequence
   const query: Record<string, string> = {
     time_status: applied.time_status,
@@ -181,14 +217,17 @@ watch(
     void load()
   },
 )
+const planOptions = useQueryRequest()
 onMounted(() => {
+  const signal = planOptions.next()
   restore()
   void load()
-  void listPlans()
+  void listPlans(signal)
     .then((result) => {
-      plans.value = result
+      if (!signal.aborted) plans.value = result
     })
     .catch(() => {
+      if (signal.aborted) return
       ElMessage.warning('规则选项加载失败，仍可按名称搜索账单')
     })
 })
@@ -273,7 +312,9 @@ onMounted(() => {
               :value="row.amount"
               :currency="auth.user?.currency_code" /></template></el-table-column
         ><el-table-column label="周期" width="130"
-          ><template #default="{ row }">{{ cycleText(row) }}</template></el-table-column
+          ><template #default="{ row }">{{
+            cycleText(row as BillOccurrence)
+          }}</template></el-table-column
         ><el-table-column label="时间状态" width="100"
           ><template #default="{ row }"
             ><el-tag :type="row.time_status === 'upcoming' ? 'warning' : 'info'">{{
@@ -293,7 +334,7 @@ onMounted(() => {
               :type="row.is_valid ? 'danger' : 'success'"
               :loading="actionId === row.id"
               :disabled="actionId !== null"
-              @click="toggle(row)"
+              @click="toggle(row as BillOccurrence)"
               >{{ row.is_valid ? '标记无效' : '恢复有效' }}</el-button
             ></template
           ></el-table-column

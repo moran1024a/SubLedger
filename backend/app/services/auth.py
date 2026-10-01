@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
@@ -66,3 +66,24 @@ def revoke_session(db: Session, token: str) -> None:
     )
     if session_record is not None:
         session_record.revoked_at = utc_now()
+
+
+def cleanup_expired_sessions(database, *, batch_size: int = 500, limit: int = 10000) -> int:
+    """Delete only expired sessions, in bounded transactions using the expiry index."""
+    cutoff = utc_now()
+    removed = 0
+    while removed < limit:
+        with database.session() as db:
+            ids = db.scalars(
+                select(SessionRecord.id)
+                .where(SessionRecord.expires_at <= cutoff)
+                .order_by(SessionRecord.expires_at, SessionRecord.id)
+                .limit(min(batch_size, limit - removed))
+                .with_for_update(skip_locked=True)
+            ).all()
+            if not ids:
+                break
+            db.execute(delete(SessionRecord).where(SessionRecord.id.in_(ids), SessionRecord.expires_at <= cutoff))
+            db.commit()
+            removed += len(ids)
+    return removed

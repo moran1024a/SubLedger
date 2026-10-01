@@ -1,4 +1,16 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/card/style/css'
+import 'element-plus/es/components/input/style/css'
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
+import 'element-plus/es/components/option/style/css'
+import 'element-plus/es/components/select/style/css'
+import 'element-plus/es/components/table/style/css'
+import 'element-plus/es/components/table-column/style/css'
+
+import { ElButton, ElCard, ElInput, ElOption, ElSelect, ElTable, ElTableColumn } from 'element-plus'
+import { useQueryRequest } from '@/composables/useQueryRequest'
 import { asApiError } from '@/utils/apiErrors'
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -30,15 +42,20 @@ const filtered = computed(() =>
       (!status.value || (status.value === 'enabled' ? plan.is_enabled : !plan.is_enabled)),
   ),
 )
+const queryRequests = useQueryRequest()
 async function load() {
+  const signal = queryRequests.next()
   loading.value = true
   error.value = null
   try {
-    plans.value = await listPlans()
+    const result = await listPlans(signal)
+    if (signal.aborted) return
+    plans.value = result
   } catch (cause) {
+    if (signal.aborted) return
     error.value = asApiError(cause, '无法连接服务器，请检查网络或服务状态。')
   } finally {
-    loading.value = false
+    if (!signal.aborted) loading.value = false
   }
 }
 function resetFilters() {
@@ -174,14 +191,14 @@ onMounted(load)
               :type="row.is_enabled ? 'danger' : 'success'"
               :loading="actionId === row.id && actionType === 'toggle'"
               :disabled="actionId !== null"
-              @click="toggle(row)"
+              @click="toggle(row as BillPlan)"
               >{{ row.is_enabled ? '停用' : '启用' }}</el-button
             ><el-button
               link
               type="danger"
               :loading="actionId === row.id && actionType === 'delete'"
               :disabled="actionId !== null"
-              @click="remove(row)"
+              @click="remove(row as BillPlan)"
               >删除</el-button
             ></template
           ></el-table-column

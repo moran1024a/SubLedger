@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.api import auth, bills, logs, notifications, plans, statistics, users
+from app.api import auth, bills, logs, notification_records, notifications, plans, runtime, statistics, users
 from app.bootstrap import ensure_bootstrap_admin
 from app.config import ConfigError, load_settings
 from app.database import Database
@@ -40,7 +40,7 @@ def create_app(settings=None) -> FastAPI:
             database.dispose()
             write_system_log(settings, level="INFO", module="system", event="application_stopped", request_id=None, message="应用已停止")
 
-    app = FastAPI(title="SubLedger", version="0.1.5", lifespan=lifespan)
+    app = FastAPI(title="SubLedger", version="0.1.6", lifespan=lifespan)
     app.state.settings = settings
     app.state.database = database
     app.state.fernet = fernet
@@ -58,12 +58,15 @@ def create_app(settings=None) -> FastAPI:
     app.include_router(statistics.router)
     app.include_router(notifications.router)
     app.include_router(logs.router)
+    app.include_router(runtime.router)
+    app.include_router(notification_records.router)
 
     @app.get("/health")
     def health(request: Request):
         db_ok = request.app.state.database.check_connection()
         scheduler_obj = request.app.state.scheduler
-        scheduler_ok = not settings.scheduler.enabled or scheduler_obj.running
+        scheduler_status = scheduler_obj.snapshot()["status"]
+        scheduler_ok = scheduler_status != "error"
         status = "ok" if db_ok and scheduler_ok else "degraded"
         return JSONResponse(
             status_code=200 if status == "ok" else 503,
@@ -71,11 +74,7 @@ def create_app(settings=None) -> FastAPI:
                 "status": status,
                 "application": "ok",
                 "database": "ok" if db_ok else "error",
-                "scheduler": (
-                    "disabled"
-                    if not settings.scheduler.enabled
-                    else "ok" if scheduler_obj.running else "error"
-                ),
+                "scheduler": scheduler_status,
             },
         )
 

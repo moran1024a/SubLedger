@@ -24,8 +24,9 @@ export function formatDate(value: string): string {
   return value
 }
 
-export function formatDateTime(value: string): string {
+export function formatDateTime(value: string, timezone?: string): string {
   return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: timezone,
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(new Date(value))

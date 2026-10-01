@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,7 +12,7 @@ from app.models import NotificationSetting, User
 from app.schemas import NotificationSettingsPatch, NotificationSettingsResponse
 from app.security import decrypt_secret, encrypt_secret
 from app.services.logging import write_user_log
-from app.services.notifications import send_test_email, send_test_feishu
+from app.services.notifications import classify_error, notification_config, send_test_email, send_test_feishu, setting_version
 from app.services.outbound import resolve_smtp_target, validate_feishu_webhook
 from app.services.users import lock_user, utc_now
 
@@ -42,12 +44,10 @@ def get_settings(user: User = Depends(get_current_user), db: Session = Depends(g
 
 @router.put("", response_model=NotificationSettingsResponse)
 def put_settings(payload: NotificationSettingsPatch, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    current = lock_user(db, user.id)
-    if current is None or not current.is_active:
-        raise AppError("AUTH_INVALID_CREDENTIALS", "用户已停用", 401)
-    setting = db.scalar(select(NotificationSetting).where(NotificationSetting.user_id == user.id).with_for_update().execution_options(populate_existing=True))
-    if setting is None:
-        raise AppError("NOTIFICATION_SETTINGS_NOT_FOUND", "通知配置不存在", 404)
+    original = _settings(db, user.id)
+    version = setting_version(original)
+    # Validate a detached candidate before holding any database row locks.
+    setting = SimpleNamespace(**{column.name: getattr(original, column.name) for column in NotificationSetting.__table__.columns})
     previous_smtp_target = (setting.smtp_host, setting.smtp_port)
     values = payload.model_dump(exclude_unset=True, exclude={"smtp_password", "feishu_webhook", "feishu_secret"})
     for key, value in values.items():
@@ -65,7 +65,8 @@ def put_settings(payload: NotificationSettingsPatch, request: Request, user: Use
     ):
         try:
             resolve_smtp_target(
-                setting.smtp_host, setting.smtp_port or 25, request.app.state.settings.security
+                setting.smtp_host, setting.smtp_port or 25, request.app.state.settings.security,
+                timeout=notification_config(request.app.state.settings).dns_timeout_seconds
             )
         except (ValueError, UnicodeError, OSError) as exc:
             raise AppError("SMTP_TARGET_NOT_ALLOWED", "SMTP 目标不符合服务器安全设置或无法解析", 400) from exc
@@ -78,10 +79,21 @@ def put_settings(payload: NotificationSettingsPatch, request: Request, user: Use
                 raise AppError("FEISHU_SETTINGS_INCOMPLETE", "飞书通知配置不完整", 400)
         except ValueError as exc:
             raise AppError("FEISHU_WEBHOOK_NOT_ALLOWED", "仅支持飞书或 Lark 官方 HTTPS 机器人 Webhook", 400) from exc
-    setting.updated_at = utc_now()
+    current = lock_user(db, user.id)
+    if current is None or not current.is_active:
+        raise AppError("AUTH_INVALID_CREDENTIALS", "用户已停用", 401)
+    locked = db.scalar(select(NotificationSetting).where(NotificationSetting.user_id == user.id).with_for_update().execution_options(populate_existing=True))
+    if locked is None:
+        raise AppError("NOTIFICATION_SETTINGS_NOT_FOUND", "通知配置不存在", 404)
+    if setting_version(locked) != version:
+        raise AppError("NOTIFICATION_SETTINGS_CHANGED", "通知设置已被修改，请重新加载后再保存", 409)
+    for column in NotificationSetting.__table__.columns:
+        if column.name not in {"user_id", "updated_at"}:
+            setattr(locked, column.name, getattr(setting, column.name))
+    locked.updated_at = utc_now()
     db.commit()
     write_user_log(request.app.state.settings, user_id=user.id, level="INFO", module="notifications", event="notification_settings_updated", request_id=request.state.request_id, message="通知配置已修改")
-    return _response(setting)
+    return _response(locked)
 
 
 @router.post("/test-email", status_code=204)
@@ -91,7 +103,7 @@ def test_email(request: Request, user: User = Depends(get_current_user), db: Ses
     try:
         send_test_email(setting, request.app.state.fernet, request.app.state.settings)
     except Exception as exc:
-        raise AppError("EMAIL_TEST_FAILED", "测试邮件发送失败", 400) from exc
+        raise _test_error(exc, "邮件") from exc
     write_user_log(request.app.state.settings, user_id=user.id, level="INFO", module="notifications", event="test_email_sent", request_id=request.state.request_id, message="测试邮件已发送")
 
 
@@ -100,7 +112,13 @@ def test_feishu(request: Request, user: User = Depends(get_current_user), db: Se
     setting = _settings(db, user.id)
     _validate_enabled_channels(setting)
     try:
-        send_test_feishu(setting, request.app.state.fernet)
+        send_test_feishu(setting, request.app.state.fernet, request.app.state.settings)
     except Exception as exc:
-        raise AppError("FEISHU_TEST_FAILED", "测试飞书消息发送失败", 400) from exc
+        raise _test_error(exc, "飞书") from exc
     write_user_log(request.app.state.settings, user_id=user.id, level="INFO", module="notifications", event="test_feishu_sent", request_id=request.state.request_id, message="测试飞书消息已发送")
+
+
+def _test_error(exc, channel):
+    failure = classify_error(exc)
+    message = "发送结果未知，请先检查是否收到消息，避免重复发送" if failure.unknown else f"测试{channel}发送失败：{failure.code}"
+    return AppError(failure.code, message, 400)

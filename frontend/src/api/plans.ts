@@ -1,11 +1,11 @@
 import { request } from './client'
 import type { BillPlan, BillPlanPatch, BillPlanPayload } from '@/types/api'
 
-export function listPlans() {
-  return request<BillPlan[]>('/plans')
+export function listPlans(signal?: AbortSignal) {
+  return request<BillPlan[]>('/plans', { signal })
 }
-export function getPlan(id: number) {
-  return request<BillPlan>(`/plans/${id}`)
+export function getPlan(id: number, signal?: AbortSignal) {
+  return request<BillPlan>(`/plans/${id}`, { signal })
 }
 export function createPlan(payload: BillPlanPayload) {
   return request<BillPlan>('/plans', { method: 'POST', body: JSON.stringify(payload) })

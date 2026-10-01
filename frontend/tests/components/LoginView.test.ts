@@ -10,7 +10,10 @@ vi.mock('vue-router', () => ({
   useRoute: () => ({ query: {} }),
 }))
 vi.mock('@/api/auth', () => ({ login: vi.fn(), getCurrentUser: vi.fn(), logout: vi.fn() }))
-vi.mock('element-plus', () => ({ ElMessage: { error: vi.fn() } }))
+vi.mock('element-plus', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('element-plus')>()),
+  ElMessage: { error: vi.fn() },
+}))
 
 beforeEach(() => {
   setActivePinia(createPinia())

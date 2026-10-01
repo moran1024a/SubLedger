@@ -1,4 +1,13 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/card/style/css'
+import 'element-plus/es/components/descriptions/style/css'
+import 'element-plus/es/components/descriptions-item/style/css'
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
+
+import { ElButton, ElCard, ElDescriptions, ElDescriptionsItem } from 'element-plus'
+import { useQueryRequest } from '@/composables/useQueryRequest'
 import { onBeforeUnmount, watch, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -31,20 +40,22 @@ onBeforeUnmount(() => {
   generation += 1
   requestSequence += 1
 })
+const queryRequests = useQueryRequest()
 async function load() {
+  const signal = queryRequests.next()
   const sequence = ++requestSequence
   const targetId = Number(route.params.id)
   loading.value = true
   error.value = null
   try {
-    const loaded = await getPlan(targetId)
-    if (sequence !== requestSequence) return
+    const loaded = await getPlan(targetId, signal)
+    if (signal.aborted || sequence !== requestSequence) return
     plan.value = loaded
   } catch (cause) {
-    if (sequence !== requestSequence) return
+    if (signal.aborted || sequence !== requestSequence) return
     error.value = asApiError(cause, '加载失败')
   } finally {
-    if (sequence === requestSequence) loading.value = false
+    if (!signal.aborted && sequence === requestSequence) loading.value = false
   }
 }
 async function save(payload: BillPlanPayload) {

@@ -1,4 +1,23 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/date-picker/style/css'
+import 'element-plus/es/components/form/style/css'
+import 'element-plus/es/components/form-item/style/css'
+import 'element-plus/es/components/input/style/css'
+import 'element-plus/es/components/input-number/style/css'
+import 'element-plus/es/components/option/style/css'
+import 'element-plus/es/components/select/style/css'
+
+import {
+  ElButton,
+  ElDatePicker,
+  ElForm,
+  ElFormItem,
+  ElInput,
+  ElInputNumber,
+  ElOption,
+  ElSelect,
+} from 'element-plus'
 import { reactive, ref, watch } from 'vue'
 import type { BillPlan, BillPlanPayload } from '@/types/api'
 import { isValidAmount, isValidCycleDays } from '@/utils/validation'

@@ -1,4 +1,12 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/card/style/css'
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/option/style/css'
+import 'element-plus/es/components/select/style/css'
+
+import { ElButton, ElCard, ElOption, ElSelect } from 'element-plus'
+import { useQueryRequest } from '@/composables/useQueryRequest'
 import { useLogFiles } from '@/composables/useLogFiles'
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -23,18 +31,20 @@ const {
   load: loadLogs,
   downloadFile,
 } = useLogFiles(
-  () => (selectedId.value ? getUserLogs(selectedId.value) : []),
-  (filename) => downloadUserLog(selectedId.value!, filename),
+  (signal) => (selectedId.value ? getUserLogs(selectedId.value, signal) : []),
+  (filename, signal) => downloadUserLog(selectedId.value!, filename, signal),
 )
+const userQueries = useQueryRequest()
 let userSearchSequence = 0
 async function loadUsers(q = '') {
+  const signal = userQueries.next()
   const sequence = ++userSearchSequence
   try {
-    const result = await listUsers({ q, page_size: 100 })
-    if (sequence !== userSearchSequence) return
+    const result = await listUsers({ q, page_size: 100 }, signal)
+    if (signal.aborted || sequence !== userSearchSequence) return
     users.value = result.items.filter((user) => user.role === 'user')
   } catch (cause) {
-    if (sequence !== userSearchSequence) return
+    if (signal.aborted || sequence !== userSearchSequence) return
     ElMessage.error(cause instanceof ApiError ? cause.message : '加载用户失败')
   }
 }
@@ -46,18 +56,23 @@ watch(
   },
   { flush: 'sync' },
 )
+const linkedQueries = useQueryRequest()
 onMounted(async () => {
+  const signal = linkedQueries.next()
   await loadUsers()
+  if (signal.aborted) return
   const queryId = Number(route.query.user_id)
   if (Number.isSafeInteger(queryId) && queryId > 0) {
     try {
-      const target = users.value.find((user) => user.id === queryId) ?? (await getUser(queryId))
+      const target =
+        users.value.find((user) => user.id === queryId) ?? (await getUser(queryId, signal))
+      if (signal.aborted) return
       if (target.role === 'user') {
         if (!users.value.some((user) => user.id === queryId)) users.value.push(target)
         selectedId.value = queryId
       }
     } catch {
-      ElMessage.error('指定用户不存在或无法加载')
+      if (!signal.aborted) ElMessage.error('指定用户不存在或无法加载')
     }
   }
 })

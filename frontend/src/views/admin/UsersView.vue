@@ -1,4 +1,32 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/card/style/css'
+import 'element-plus/es/components/dialog/style/css'
+import 'element-plus/es/components/form/style/css'
+import 'element-plus/es/components/form-item/style/css'
+import 'element-plus/es/components/input/style/css'
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
+import 'element-plus/es/components/option/style/css'
+import 'element-plus/es/components/pagination/style/css'
+import 'element-plus/es/components/select/style/css'
+import 'element-plus/es/components/table/style/css'
+import 'element-plus/es/components/table-column/style/css'
+
+import {
+  ElButton,
+  ElCard,
+  ElDialog,
+  ElForm,
+  ElFormItem,
+  ElInput,
+  ElOption,
+  ElPagination,
+  ElSelect,
+  ElTable,
+  ElTableColumn,
+} from 'element-plus'
+import { useQueryRequest } from '@/composables/useQueryRequest'
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { createUser, disableUser, enableUser, listUsers, resetUserPassword } from '@/api/users'
@@ -28,13 +56,18 @@ const selected = ref<CurrentUser | null>(null)
 const createForm = ref({ username: '', password: '', confirm: '' })
 const createFieldErrors = ref<Record<string, string>>({})
 const resetForm = ref({ password: '', confirm: '' })
+const queryRequests = useQueryRequest()
 async function load() {
+  const signal = queryRequests.next()
   const sequence = ++requestSequence
   loading.value = true
   error.value = null
   try {
-    const result = await listUsers({ ...applied, page: page.value, page_size: pageSize.value })
-    if (sequence !== requestSequence) return
+    const result = await listUsers(
+      { ...applied, page: page.value, page_size: pageSize.value },
+      signal,
+    )
+    if (signal.aborted || sequence !== requestSequence) return
     total.value = result.total
     const lastPage = Math.max(1, Math.ceil(result.total / pageSize.value))
     if (page.value > lastPage) {
@@ -44,10 +77,10 @@ async function load() {
     }
     users.value = result.items
   } catch (cause) {
-    if (sequence !== requestSequence) return
+    if (signal.aborted || sequence !== requestSequence) return
     error.value = asApiError(cause, '无法连接服务器，请检查网络或服务状态。')
   } finally {
-    if (sequence === requestSequence) loading.value = false
+    if (!signal.aborted && sequence === requestSequence) loading.value = false
   }
 }
 function query() {
@@ -203,14 +236,14 @@ onMounted(load)
             ><el-button link type="primary" @click="$router.push(`/admin/users/${row.id}`)"
               >查看</el-button
             ><template v-if="row.id !== 0"
-              ><el-button link :disabled="actionId !== null" @click="openReset(row)"
+              ><el-button link :disabled="actionId !== null" @click="openReset(row as CurrentUser)"
                 >重置密码</el-button
               ><el-button
                 link
                 :type="row.is_active ? 'danger' : 'success'"
                 :loading="actionId === row.id"
                 :disabled="actionId !== null"
-                @click="toggle(row)"
+                @click="toggle(row as CurrentUser)"
                 >{{ row.is_active ? '停用' : '启用' }}</el-button
               ></template
             ></template

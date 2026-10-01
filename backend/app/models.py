@@ -143,6 +143,10 @@ class NotificationRecord(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
     retry_count: Mapped[int] = mapped_column(INTEGER(unsigned=True), nullable=False, default=0)
     error_message: Mapped[str | None] = mapped_column(String(1000))
+    attempt_count: Mapped[int] = mapped_column(INTEGER(unsigned=True), nullable=False, default=0, server_default="0")
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    next_retry_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    error_code: Mapped[str | None] = mapped_column(String(64))
 
     bill: Mapped[BillOccurrence | None] = relationship(back_populates="notification_records")
     __table_args__ = (

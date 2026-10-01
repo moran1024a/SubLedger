@@ -1,4 +1,30 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/card/style/css'
+import 'element-plus/es/components/descriptions/style/css'
+import 'element-plus/es/components/descriptions-item/style/css'
+import 'element-plus/es/components/divider/style/css'
+import 'element-plus/es/components/form/style/css'
+import 'element-plus/es/components/form-item/style/css'
+import 'element-plus/es/components/input/style/css'
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
+import 'element-plus/es/components/option/style/css'
+import 'element-plus/es/components/select/style/css'
+
+import {
+  ElButton,
+  ElCard,
+  ElDescriptions,
+  ElDescriptionsItem,
+  ElDivider,
+  ElForm,
+  ElFormItem,
+  ElInput,
+  ElOption,
+  ElSelect,
+} from 'element-plus'
+import { useQueryRequest } from '@/composables/useQueryRequest'
 import { timezones, currencies } from '@/utils/profileOptions'
 import { onBeforeUnmount, watch, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -27,14 +53,16 @@ onBeforeUnmount(() => {
   generation += 1
   requestSequence += 1
 })
+const queryRequests = useQueryRequest()
 async function load() {
+  const signal = queryRequests.next()
   const sequence = ++requestSequence
   const targetId = Number(route.params.id)
   loading.value = true
   error.value = null
   try {
-    const loaded = await getUser(targetId)
-    if (sequence !== requestSequence) return
+    const loaded = await getUser(targetId, signal)
+    if (signal.aborted || sequence !== requestSequence) return
     user.value = loaded
     Object.assign(form, {
       username: loaded.username,
@@ -42,10 +70,10 @@ async function load() {
       currency_code: loaded.currency_code,
     })
   } catch (cause) {
-    if (sequence !== requestSequence) return
+    if (signal.aborted || sequence !== requestSequence) return
     error.value = asApiError(cause, '无法连接服务器，请检查网络或服务状态。')
   } finally {
-    if (sequence === requestSequence) loading.value = false
+    if (!signal.aborted && sequence === requestSequence) loading.value = false
   }
 }
 async function save() {
