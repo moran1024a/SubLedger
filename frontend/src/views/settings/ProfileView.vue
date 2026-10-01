@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { timezones, currencies } from '@/utils/profileOptions'
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { changePassword, updateProfile } from '@/api/users'
@@ -14,19 +15,6 @@ const profileError = ref('')
 const profileFieldErrors = ref<Record<string, string>>({})
 const profile = reactive({ username: '', timezone: '', currency_code: '' })
 const password = reactive({ current: '', next: '', confirm: '' })
-const timezones = Array.from(
-  new Set([
-    'UTC',
-    'Asia/Shanghai',
-    'Asia/Singapore',
-    'Asia/Tokyo',
-    'Europe/London',
-    'America/New_York',
-    'America/Los_Angeles',
-    ...(typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : []),
-  ]),
-)
-const currencies = ['CNY', 'USD', 'EUR', 'GBP', 'JPY', 'SGD', 'HKD']
 onMounted(() => {
   if (auth.user)
     Object.assign(profile, {

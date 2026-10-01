@@ -19,9 +19,8 @@ beforeEach(() => {
 })
 
 describe('LoginView', () => {
-  it('logs in, refreshes the current user, and follows the role home', async () => {
-    vi.mocked(authApi.login).mockResolvedValue({} as never)
-    vi.mocked(authApi.getCurrentUser).mockResolvedValue({
+  it('logs in using the returned current user and follows the role home', async () => {
+    vi.mocked(authApi.login).mockResolvedValue({
       id: 0,
       username: 'admin',
       role: 'admin',
@@ -51,7 +50,7 @@ describe('LoginView', () => {
     await (wrapper.vm as unknown as { submit: () => Promise<void> }).submit()
 
     expect(authApi.login).toHaveBeenCalledWith('admin', 'password')
-    expect(authApi.getCurrentUser).toHaveBeenCalled()
+    expect(authApi.getCurrentUser).not.toHaveBeenCalled()
     expect(push).toHaveBeenCalledWith('/admin')
   })
 })

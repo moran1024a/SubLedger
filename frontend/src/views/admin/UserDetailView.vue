@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { timezones, currencies } from '@/utils/profileOptions'
+import { onBeforeUnmount, watch, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { disableUser, enableUser, getUser, resetUserPassword, updateUser } from '@/api/users'
@@ -8,7 +9,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingBlock from '@/components/common/LoadingBlock.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
-import { getFieldErrors } from '@/utils/apiErrors'
+import { asApiError, getFieldErrors } from '@/utils/apiErrors'
 const route = useRoute()
 const router = useRouter()
 const user = ref<CurrentUser | null>(null)
@@ -20,21 +21,20 @@ const error = ref<ApiError | null>(null)
 const fieldErrors = ref<Record<string, string>>({})
 const password = reactive({ value: '', confirm: '' })
 const form = reactive({ username: '', timezone: '', currency_code: '' })
-const timezones = [
-  'UTC',
-  'Asia/Shanghai',
-  'Asia/Singapore',
-  'Asia/Tokyo',
-  'Europe/London',
-  'America/New_York',
-  'America/Los_Angeles',
-]
-const currencies = ['CNY', 'USD', 'EUR', 'GBP', 'JPY', 'SGD', 'HKD']
+let generation = 0
+let requestSequence = 0
+onBeforeUnmount(() => {
+  generation += 1
+  requestSequence += 1
+})
 async function load() {
+  const sequence = ++requestSequence
+  const targetId = Number(route.params.id)
   loading.value = true
   error.value = null
   try {
-    const loaded = await getUser(Number(route.params.id))
+    const loaded = await getUser(targetId)
+    if (sequence !== requestSequence) return
     user.value = loaded
     Object.assign(form, {
       username: loaded.username,
@@ -42,30 +42,30 @@ async function load() {
       currency_code: loaded.currency_code,
     })
   } catch (cause) {
-    error.value =
-      cause instanceof ApiError
-        ? cause
-        : new ApiError({
-            status: 0,
-            code: 'NETWORK',
-            message: '无法连接服务器，请检查网络或服务状态。',
-          })
+    if (sequence !== requestSequence) return
+    error.value = asApiError(cause, '无法连接服务器，请检查网络或服务状态。')
   } finally {
-    loading.value = false
+    if (sequence === requestSequence) loading.value = false
   }
 }
 async function save() {
-  if (!user.value) return
+  if (!user.value || saving.value || resetting.value || toggling.value) return
   fieldErrors.value = {}
   saving.value = true
+  const targetId = user.value.id
+  const version = generation
+  const current = () => version === generation && Number(route.params.id) === targetId
   try {
-    user.value = await updateUser(user.value.id, {
+    const updated = await updateUser(targetId, {
       username: form.username.trim(),
       timezone: form.timezone,
       currency_code: form.currency_code,
     })
+    if (!current()) return
+    user.value = updated
     ElMessage.success('用户资料已保存')
   } catch (cause) {
+    if (!current()) return
     fieldErrors.value = getFieldErrors(cause)
     ElMessage.error(cause instanceof ApiError ? cause.message : '保存失败')
   } finally {
@@ -73,23 +73,30 @@ async function save() {
   }
 }
 async function reset() {
-  if (resetting.value) return
+  if (resetting.value || saving.value || toggling.value) return
   if (!user.value || password.value.length < 8 || password.value !== password.confirm) {
     ElMessage.error('请确认至少 8 位且一致的新密码')
     return
   }
+  const targetId = user.value.id
+  const version = generation
+  const current = () => version === generation && Number(route.params.id) === targetId
+  resetting.value = true
   try {
     await ElMessageBox.confirm('重置后该用户的现有会话将失效，需要重新登录。', '确认重置密码', {
       type: 'warning',
       confirmButtonText: '重置',
       cancelButtonText: '取消',
     })
+    if (!current()) return
     resetting.value = true
-    await resetUserPassword(user.value.id, password.value)
+    await resetUserPassword(targetId, password.value)
+    if (!current()) return
     password.value = ''
     password.confirm = ''
     ElMessage.success('密码已重置')
   } catch (cause) {
+    if (!current()) return
     if (cause !== 'cancel' && cause !== 'close')
       ElMessage.error(cause instanceof ApiError ? cause.message : '重置失败')
   } finally {
@@ -97,8 +104,12 @@ async function reset() {
   }
 }
 async function toggle() {
-  if (!user.value || toggling.value) return
+  if (!user.value || toggling.value || saving.value || resetting.value) return
+  toggling.value = true
   const wasActive = user.value.is_active
+  const targetId = user.value.id
+  const version = generation
+  const current = () => version === generation && Number(route.params.id) === targetId
   try {
     if (wasActive)
       await ElMessageBox.confirm(
@@ -106,19 +117,36 @@ async function toggle() {
         '确认停用用户',
         { type: 'warning', confirmButtonText: '停用', cancelButtonText: '取消' },
       )
+    if (!current()) return
     toggling.value = true
-    if (wasActive) await disableUser(user.value.id)
-    else await enableUser(user.value.id)
+    if (wasActive) await disableUser(targetId)
+    else await enableUser(targetId)
+    if (!current()) return
     ElMessage.success(wasActive ? '用户已停用' : '用户已启用')
     await load()
   } catch (cause) {
+    if (!current()) return
     if (cause !== 'cancel' && cause !== 'close')
       ElMessage.error(cause instanceof ApiError ? cause.message : '操作失败')
   } finally {
     toggling.value = false
   }
 }
-onMounted(load)
+watch(
+  () => route.params.id,
+  () => {
+    generation += 1
+    user.value = null
+    fieldErrors.value = {}
+    password.value = ''
+    password.confirm = ''
+    Object.assign(form, { username: '', timezone: '', currency_code: '' })
+    const targetId = Number(route.params.id)
+    requestSequence += 1
+    if (Number.isSafeInteger(targetId) && targetId >= 0) void load()
+  },
+  { immediate: true, flush: 'sync' },
+)
 </script>
 
 <template>

@@ -1,27 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import {
-  isValidCycleDays,
-  validateCycleDays,
-  validateNotificationSettings,
-} from '@/utils/validation'
+import { isValidCycleDays, validateNotificationSettings } from '@/utils/validation'
 
 describe('custom cycle validation', () => {
   it.each(['1', '36500'])('accepts the supported boundary %s', (value) => {
     expect(isValidCycleDays(value)).toBe(true)
-    expect(validateCycleDays('custom_days', value)).toBeUndefined()
   })
 
   it.each(['0', '-1', '1.5', '36501', '999999999999999999999', '1e2', '', '01'])(
     'rejects invalid or unsupported days %s',
     (value) => {
       expect(isValidCycleDays(value)).toBe(false)
-      expect(validateCycleDays('custom_days', value)).toBe('请输入 1 到 36500 的整数天数')
     },
   )
-
-  it('does not require custom days for another cycle', () => {
-    expect(validateCycleDays('monthly', '')).toBeUndefined()
-  })
 })
 
 const base = {

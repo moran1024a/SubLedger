@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { asApiError } from '@/utils/apiErrors'
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { dateShortcut, readBillQuery, validDate } from '@/utils/billFilters'
@@ -77,14 +78,7 @@ async function load() {
     bills.value = result.items
   } catch (cause) {
     if (sequence !== requestSequence) return
-    error.value =
-      cause instanceof ApiError
-        ? cause
-        : new ApiError({
-            status: 0,
-            code: 'NETWORK',
-            message: '无法连接服务器，请检查网络或服务状态。',
-          })
+    error.value = asApiError(cause, '无法连接服务器，请检查网络或服务状态。')
   } finally {
     if (sequence === requestSequence) loading.value = false
   }

@@ -10,7 +10,7 @@ import {
 import { ApiError, type NotificationPayload, type NotificationSettings } from '@/types/api'
 import { timeToApi, timeToMinutes } from '@/utils/format'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
-import { getFieldErrors } from '@/utils/apiErrors'
+import { asApiError, getFieldErrors } from '@/utils/apiErrors'
 import { validateNotificationSettings } from '@/utils/validation'
 import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingBlock from '@/components/common/LoadingBlock.vue'
@@ -95,14 +95,7 @@ async function load() {
   try {
     fill(await getNotificationSettings())
   } catch (cause) {
-    error.value =
-      cause instanceof ApiError
-        ? cause
-        : new ApiError({
-            status: 0,
-            code: 'NETWORK',
-            message: '无法连接服务器，请检查网络或服务状态。',
-          })
+    error.value = asApiError(cause, '无法连接服务器，请检查网络或服务状态。')
   } finally {
     loading.value = false
   }

@@ -7,7 +7,7 @@ import {
   timeToApi,
   timeToMinutes,
 } from '@/utils/format'
-import { isValidAmount, isValidCycleDays, passwordsMatch } from '@/utils/validation'
+import { isValidAmount, isValidCycleDays } from '@/utils/validation'
 
 describe('format helpers', () => {
   it('formats money without floating point conversion', () => {
@@ -45,6 +45,5 @@ describe('validation helpers', () => {
   it('validates cycle days and passwords', () => {
     expect(isValidCycleDays('3')).toBe(true)
     expect(isValidCycleDays('0')).toBe(false)
-    expect(passwordsMatch('password', 'password')).toBe(true)
   })
 })

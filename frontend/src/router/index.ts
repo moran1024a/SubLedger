@@ -130,7 +130,7 @@ router.beforeEach(async (to) => {
     try {
       await auth.initialize()
     } catch {
-      auth.clear()
+      return true // App renders a retry screen until authentication can be checked.
     }
   }
   if (to.meta.public) {

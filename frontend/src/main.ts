@@ -17,6 +17,7 @@ app.use(pinia).use(router).use(ElementPlus)
 setUnauthorizedHandler(async (_error, url) => {
   const auth = useAuthStore(pinia)
   const wasInitialized = auth.initialized
+  if (url.endsWith('/auth/login') || (!wasInitialized && url.endsWith('/auth/me'))) return
   auth.clear()
   if (
     url.endsWith('/auth/login') ||

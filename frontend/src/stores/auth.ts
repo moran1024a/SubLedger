@@ -9,25 +9,45 @@ export const useAuthStore = defineStore('auth', () => {
   const loading = ref(false)
   const isAdmin = computed(() => user.value?.id === 0 && user.value?.role === 'admin')
 
-  async function initialize() {
-    if (initialized.value) return
+  const initializationError = ref<unknown>(null)
+  let pending: Promise<void> | null = null
+  let generation = 0
+
+  function initialize(): Promise<void> {
+    if (initialized.value) return Promise.resolve()
+    if (pending) return pending
+    const version = generation
     loading.value = true
-    try {
-      user.value = await authApi.getCurrentUser()
-    } catch (error) {
-      if (!(error instanceof ApiError) || error.status !== 401) throw error
-      user.value = null
-    } finally {
-      initialized.value = true
-      loading.value = false
-    }
+    initializationError.value = null
+    pending = (async () => {
+      try {
+        const current = await authApi.getCurrentUser()
+        if (version !== generation) return
+        user.value = current
+        initialized.value = true
+      } catch (error) {
+        if (version !== generation) return
+        if (error instanceof ApiError && error.status === 401) {
+          user.value = null
+          initialized.value = true
+        } else {
+          initializationError.value = error
+          throw error
+        }
+      } finally {
+        if (version === generation) loading.value = false
+        pending = null
+      }
+    })()
+    return pending
   }
 
   async function login(username: string, password: string) {
+    generation += 1
     loading.value = true
+    initializationError.value = null
     try {
-      await authApi.login(username, password)
-      user.value = await authApi.getCurrentUser()
+      user.value = await authApi.login(username, password)
       initialized.value = true
     } finally {
       loading.value = false
@@ -45,6 +65,9 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function clear() {
+    generation += 1
+    loading.value = false
+    initializationError.value = null
     user.value = null
     initialized.value = true
   }
@@ -53,5 +76,16 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = nextUser
   }
 
-  return { user, initialized, loading, isAdmin, initialize, login, logout, clear, setUser }
+  return {
+    user,
+    initializationError,
+    initialized,
+    loading,
+    isAdmin,
+    initialize,
+    login,
+    logout,
+    clear,
+    setUser,
+  }
 })

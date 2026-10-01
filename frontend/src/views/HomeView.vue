@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { asApiError } from '@/utils/apiErrors'
 import { onMounted, ref } from 'vue'
 import { getSummary } from '@/api/statistics'
 import { ApiError, type StatisticsResponse } from '@/types/api'
@@ -18,14 +19,7 @@ async function load() {
   try {
     data.value = await getSummary()
   } catch (cause) {
-    error.value =
-      cause instanceof ApiError
-        ? cause
-        : new ApiError({
-            status: 0,
-            code: 'NETWORK',
-            message: '无法连接服务器，请检查网络或服务状态。',
-          })
+    error.value = asApiError(cause, '无法连接服务器，请检查网络或服务状态。')
   } finally {
     loading.value = false
   }
@@ -38,7 +32,8 @@ const money = (value: string) => formatMoney(value, auth.user?.currency_code)
   <div class="page-container">
     <PageHeader title="首页" description="查看近期订阅账单和金额统计"
       ><template #actions
-        ><el-button type="primary" @click="$router.push('/plans/new')">新建账单</el-button
+        ><el-button type="primary" @click="$router.push('/plans/new')"
+          >新建账单</el-button
         ></template
       ></PageHeader
     >

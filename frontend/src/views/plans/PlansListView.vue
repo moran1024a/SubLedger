@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { asApiError } from '@/utils/apiErrors'
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { deletePlan, disablePlan, enablePlan, listPlans } from '@/api/plans'
@@ -35,14 +36,7 @@ async function load() {
   try {
     plans.value = await listPlans()
   } catch (cause) {
-    error.value =
-      cause instanceof ApiError
-        ? cause
-        : new ApiError({
-            status: 0,
-            code: 'NETWORK',
-            message: '无法连接服务器，请检查网络或服务状态。',
-          })
+    error.value = asApiError(cause, '无法连接服务器，请检查网络或服务状态。')
   } finally {
     loading.value = false
   }
@@ -108,7 +102,8 @@ onMounted(load)
   <div class="page-container">
     <PageHeader title="账单规则" description="管理单次和周期账单规则"
       ><template #actions
-        ><el-button type="primary" @click="$router.push('/plans/new')">新建账单</el-button
+        ><el-button type="primary" @click="$router.push('/plans/new')"
+          >新建账单</el-button
         ></template
       ></PageHeader
     ><el-card class="content-card"
@@ -128,8 +123,7 @@ onMounted(load)
           ><el-option label="启用" value="enabled" /><el-option
             label="停用"
             value="disabled" /></el-select
-        ><el-button @click="resetFilters">重置</el-button
-        >
+        ><el-button @click="resetFilters">重置</el-button>
       </div>
       <LoadingBlock v-if="loading" /><ErrorState
         v-else-if="error"

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onBeforeUnmount, watch, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { deletePlan, disablePlan, enablePlan, getPlan, updatePlan } from '@/api/plans'
@@ -12,12 +12,11 @@ import StatusTag from '@/components/common/StatusTag.vue'
 import MoneyText from '@/components/common/MoneyText.vue'
 import { useAuthStore } from '@/stores/auth'
 import { formatCycle, formatDateTime } from '@/utils/format'
-import { getFieldErrors } from '@/utils/apiErrors'
+import { asApiError, getFieldErrors } from '@/utils/apiErrors'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
-const id = computed(() => Number(route.params.id))
 const plan = ref<BillPlan | null>(null)
 const loading = ref(true)
 const editing = ref(false)
@@ -26,18 +25,26 @@ const toggling = ref(false)
 const deleting = ref(false)
 const error = ref<ApiError | null>(null)
 const fieldErrors = ref<Record<string, string>>({})
+let generation = 0
+let requestSequence = 0
+onBeforeUnmount(() => {
+  generation += 1
+  requestSequence += 1
+})
 async function load() {
+  const sequence = ++requestSequence
+  const targetId = Number(route.params.id)
   loading.value = true
   error.value = null
   try {
-    plan.value = await getPlan(id.value)
+    const loaded = await getPlan(targetId)
+    if (sequence !== requestSequence) return
+    plan.value = loaded
   } catch (cause) {
-    error.value =
-      cause instanceof ApiError
-        ? cause
-        : new ApiError({ status: 0, code: 'NETWORK', message: '加载失败' })
+    if (sequence !== requestSequence) return
+    error.value = asApiError(cause, '加载失败')
   } finally {
-    loading.value = false
+    if (sequence === requestSequence) loading.value = false
   }
 }
 async function save(payload: BillPlanPayload) {
@@ -50,11 +57,13 @@ async function save(payload: BillPlanPayload) {
     old.cycle_type !== payload.cycle_type ||
     old.cycle_days !== payload.cycle_days
   const amountChanged = old.amount !== payload.amount
+  const targetId = plan.value.id
+  const version = generation
+  const current = () => version === generation && Number(route.params.id) === targetId
   try {
     if (scheduleChanged || amountChanged) {
       const messages = []
-      if (amountChanged)
-        messages.push('历史账单金额保持不变，今日及未来账单使用新金额。')
+      if (amountChanged) messages.push('历史账单金额保持不变，今日及未来账单使用新金额。')
       if (scheduleChanged)
         messages.push('未来账单将重新生成，已有无效标记会被清除，历史账单不会删除。')
       await ElMessageBox.confirm(messages.join(' '), '确认保存账单规则', {
@@ -63,11 +72,14 @@ async function save(payload: BillPlanPayload) {
         cancelButtonText: '取消',
       })
     }
-    const updated = await updatePlan(id.value, payload)
+    if (!current()) return
+    const updated = await updatePlan(targetId, payload)
+    if (!current()) return
     plan.value = updated
     editing.value = false
     ElMessage.success(updated.future_bills_rebuilt ? '已保存并重建未来账单' : '账单规则已保存')
   } catch (cause) {
+    if (!current()) return
     if (cause !== 'cancel' && cause !== 'close') {
       fieldErrors.value = getFieldErrors(cause)
       ElMessage.error(cause instanceof ApiError ? cause.message : '保存失败')
@@ -80,6 +92,9 @@ async function toggle() {
   if (!plan.value || editing.value || submitting.value || toggling.value || deleting.value) return
   toggling.value = true
   const wasEnabled = plan.value.is_enabled
+  const targetId = plan.value.id
+  const version = generation
+  const current = () => version === generation && Number(route.params.id) === targetId
   try {
     if (wasEnabled) {
       await ElMessageBox.confirm(
@@ -87,14 +102,19 @@ async function toggle() {
         '确认停用',
         { type: 'warning', confirmButtonText: '停用', cancelButtonText: '取消' },
       )
-      await disablePlan(id.value)
+      if (!current()) return
+      await disablePlan(targetId)
+      if (!current()) return
       ElMessage.success('账单规则已停用')
     } else {
-      await enablePlan(id.value)
+      if (!current()) return
+      await enablePlan(targetId)
+      if (!current()) return
       ElMessage.success('账单规则已启用')
     }
     await load()
   } catch (cause) {
+    if (!current()) return
     if (cause !== 'cancel' && cause !== 'close')
       ElMessage.error(cause instanceof ApiError ? cause.message : '操作失败')
   } finally {
@@ -104,16 +124,22 @@ async function toggle() {
 async function remove() {
   if (!plan.value || editing.value || submitting.value || toggling.value || deleting.value) return
   deleting.value = true
+  const targetId = plan.value.id
+  const version = generation
+  const current = () => version === generation && Number(route.params.id) === targetId
   try {
     await ElMessageBox.confirm(
       '删除后无法恢复。按账户时区，今天以前的已过账单会保留，今天及未来账单会同步删除且不再发送提醒。',
       '确认删除账单规则',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
     )
-    await deletePlan(id.value)
+    if (!current()) return
+    await deletePlan(targetId)
+    if (!current()) return
     ElMessage.success('账单规则已删除')
     await router.replace('/plans')
   } catch (cause) {
+    if (!current()) return
     if (cause instanceof ApiError && cause.code === 'BILL_PLAN_NOT_FOUND') {
       ElMessage.success('账单规则已不存在')
       await router.replace('/plans')
@@ -124,7 +150,19 @@ async function remove() {
     deleting.value = false
   }
 }
-onMounted(load)
+watch(
+  () => route.params.id,
+  () => {
+    generation += 1
+    plan.value = null
+    fieldErrors.value = {}
+    editing.value = false
+    const targetId = Number(route.params.id)
+    requestSequence += 1
+    if (Number.isSafeInteger(targetId) && targetId > 0) void load()
+  },
+  { immediate: true, flush: 'sync' },
+)
 </script>
 
 <template>

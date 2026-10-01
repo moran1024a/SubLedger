@@ -4,7 +4,7 @@
 
 SubLedger 按 10–20 人的小规模使用场景设计，不设账号数量配额。前端与 API 同源部署，支持直接运行、Docker Compose 和 1Panel，数据存储在部署者管理的外部 MySQL 中。
 
-**当前版本：0.1.4** · Vue 3 + TypeScript · FastAPI + SQLAlchemy · MySQL
+**当前版本：0.1.5** · Vue 3 + TypeScript · FastAPI + SQLAlchemy · MySQL
 
 [快速开始](#快速开始) · [安装与部署](#安装与部署) · [开发指南](#开发指南) · [后端与 API](backend/README.md) · [前端实现](frontend/README.md)
 
@@ -283,6 +283,18 @@ fi
 
 日常维护使用 `docker compose restart backend`、`stop backend`、`start backend`，并保持正确项目名及编排文件。`down` 保留命名卷，`down -v` 会删除它们。
 
+### 从 0.1.4 升级到 0.1.5
+
+本次无需数据库迁移，API 响应结构不变。重新安装依赖、构建前端并重启服务即可；保留数据库、主密钥和日志。
+
+- 登录与密码修改、管理员重置/停用使用统一锁顺序，阻止旧密码验证结果在重置后创建有效会话。
+- 规则与用户详情随 URL 更新，丢弃旧请求和旧确认框的结果；认证初始化失败可重试，并发初始化共享请求。
+- 每次通知发送前重新校验账户、渠道和提醒设置，由检查循环统一提交事务。已在发送中的通知会先完成，关闭操作提交后不再按旧配置继续发送。
+- 统计复用规则与全年账单，查询由 8 次减少到 3 次；未来账单补全只读取所需日期范围。历史漏账仍不补处理。
+- TOML 配置严格检查类型，例如 `enabled = false` 不可写成字符串；`app.host`、`app.port` 已废弃，保留时警告并忽略，监听地址由 Uvicorn/部署入口设置。`logging.level` 现在实际过滤日志。
+- 通知输入长度与数据库一致：SMTP 主机、用户名、发件/收件邮箱最多 255 字符，发件人名称最多 128 字符，超限返回 422。
+- 合并重复日志和资料处理，移除未使用组件、参数和直接依赖；`httpx` 仅在后端测试依赖中保留。
+
 ### 从 0.1.3 升级到 0.1.4
 
 本次无需数据库迁移。账户数量配额已移除，旧配置中的 `app.max_users` 不再生效，可保留或删除；性能设计目标为 10–20 人使用，仍须单实例、单 worker。
@@ -422,16 +434,16 @@ SubLedger/
 从项目根目录生成发布包，版本号必须与后端、前端及 FastAPI 声明一致：
 
 ```bash
-bash scripts/build-release.sh 0.1.4
+bash scripts/build-release.sh 0.1.5
 ```
 
-输出为 `dist/subledger-0.1.4.tar.gz` 和对应的 `.sha256`。脚本按固定文件清单打包源码、文档及部署文件，排除实际配置、密钥、日志、依赖目录和构建产物；它不安装依赖或构建镜像，也不会覆盖已有的同名发布包。
+输出为 `dist/subledger-0.1.5.tar.gz` 和对应的 `.sha256`。脚本按固定文件清单打包源码、文档及部署文件，排除实际配置、密钥、日志、依赖目录和构建产物；它不安装依赖或构建镜像，也不会覆盖已有的同名发布包。
 
 下载或复制两个文件到同一目录后校验：
 
 ```bash
-sha256sum -c subledger-0.1.4.tar.gz.sha256
-tar -tzf subledger-0.1.4.tar.gz
+sha256sum -c subledger-0.1.5.tar.gz.sha256
+tar -tzf subledger-0.1.5.tar.gz
 ```
 
 校验成功后解压到新的空目录。以下示例在目标目录非空时停止：
@@ -444,7 +456,7 @@ tar -tzf subledger-0.1.4.tar.gz
     printf '目标目录非空，请使用新的空目录。\n' >&2
     exit 1
   fi
-  tar -xzf subledger-0.1.4.tar.gz --strip-components=1 -C /opt/subledger
+  tar -xzf subledger-0.1.5.tar.gz --strip-components=1 -C /opt/subledger
 )
 ```
 

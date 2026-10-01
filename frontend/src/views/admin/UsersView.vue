@@ -7,7 +7,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
-import { getFieldErrors } from '@/utils/apiErrors'
+import { asApiError, getFieldErrors } from '@/utils/apiErrors'
 
 const users = ref<CurrentUser[]>([])
 const page = ref(1)
@@ -45,14 +45,7 @@ async function load() {
     users.value = result.items
   } catch (cause) {
     if (sequence !== requestSequence) return
-    error.value =
-      cause instanceof ApiError
-        ? cause
-        : new ApiError({
-            status: 0,
-            code: 'NETWORK',
-            message: '无法连接服务器，请检查网络或服务状态。',
-          })
+    error.value = asApiError(cause, '无法连接服务器，请检查网络或服务状态。')
   } finally {
     if (sequence === requestSequence) loading.value = false
   }

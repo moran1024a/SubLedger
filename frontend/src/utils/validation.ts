@@ -1,5 +1,3 @@
-import type { CycleType } from '@/types/api'
-
 export function isValidAmount(value: string): boolean {
   return (
     /^(?=\d{1,12}(?:\.\d{1,2})?$)(?!.*e)[0-9]+(?:\.[0-9]{1,2})?$/.test(value) && Number(value) > 0
@@ -8,15 +6,6 @@ export function isValidAmount(value: string): boolean {
 
 export function isValidCycleDays(value: string): boolean {
   return /^[1-9]\d*$/.test(value) && Number(value) <= 36500
-}
-
-export function validateCycleDays(type: CycleType, value: string): string | undefined {
-  if (type === 'custom_days' && !isValidCycleDays(value)) return '请输入 1 到 36500 的整数天数'
-  return undefined
-}
-
-export function passwordsMatch(password: string, confirmation: string): boolean {
-  return password.length > 0 && password === confirmation
 }
 
 interface NotificationFormValues {

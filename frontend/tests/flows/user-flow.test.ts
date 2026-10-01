@@ -147,7 +147,6 @@ describe('ordinary user flow', () => {
     expect(calls.filter((call) => call === 'POST /api/v1/plans')).toHaveLength(2)
     expect(calls).toEqual(expect.arrayContaining([
       'POST /api/v1/auth/login',
-      'GET /api/v1/auth/me',
       'POST /api/v1/plans',
       'PATCH /api/v1/plans/2',
       'DELETE /api/v1/plans/2',
