@@ -67,10 +67,10 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       await authApi.logout()
     } catch (error) {
+      // Only an already invalid session counts as signed out; other failures keep the session.
       if (!(error instanceof ApiError) || error.status !== 401) throw error
-    } finally {
-      if (version === sessionVersion.value) clear()
     }
+    if (version === sessionVersion.value) clear()
   }
 
   function clear() {

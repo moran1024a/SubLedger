@@ -29,14 +29,16 @@ function parseError(status: number, body: ApiErrorBody | null, requestId?: strin
   })
 }
 
-async function readBody(response: Response): Promise<ApiErrorBody | null> {
+const UNPARSABLE = Symbol('unparsable')
+
+async function readBody(response: Response): Promise<ApiErrorBody | null | typeof UNPARSABLE> {
   if (response.status === 204) return null
   const text = await response.text()
   if (!text) return null
   try {
     return JSON.parse(text) as ApiErrorBody
   } catch {
-    return null
+    return UNPARSABLE
   }
 }
 
@@ -128,10 +130,19 @@ async function requestAt<T>(
 ): Promise<T> {
   const version = sessionVersion()
   return perform(url, init, async (response, check) => {
-    const body = await readBody(response)
+    const parsed = await readBody(response)
     check()
+    const body = parsed === UNPARSABLE ? null : parsed
     if (!response.ok && !acceptedStatuses.includes(response.status))
       await handleError(response, body, url, version)
+    // A successful response that is not JSON cannot be trusted as data.
+    if (parsed === UNPARSABLE && response.ok)
+      throw new ApiError({
+        status: response.status,
+        code: 'INVALID_RESPONSE',
+        message: '服务器返回了无法解析的响应',
+        requestId: response.headers.get('X-Request-ID') ?? undefined,
+      })
     return body as T
   })
 }
@@ -142,9 +153,9 @@ export async function download(
   const version = sessionVersion()
   return perform(`${API_BASE}${path}`, { timeoutMs: 60000, ...init }, async (response, check) => {
     if (!response.ok) {
-      const body = await readBody(response)
+      const parsed = await readBody(response)
       check()
-      await handleError(response, body, response.url, version)
+      await handleError(response, parsed === UNPARSABLE ? null : parsed, response.url, version)
     }
     const disposition = response.headers.get('Content-Disposition') ?? ''
     const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1]

@@ -125,7 +125,11 @@ const routes: RouteRecordRaw[] = [
 const router = createRouter({
   history: createWebHistory(),
   routes,
-  scrollBehavior: (to, from, saved) => saved ?? (to.path === from.path ? false : { top: 0 }),
+  scrollBehavior: (to, from, saved) => {
+    // Wait for the out-in page transition to finish leaving before restoring a saved position.
+    if (saved) return new Promise((resolve) => setTimeout(() => resolve(saved), 160))
+    return to.path === from.path ? false : { top: 0 }
+  },
 })
 
 router.beforeEach(async (to) => {
@@ -146,6 +150,10 @@ router.beforeEach(async (to) => {
   const roles = to.meta.roles as string[] | undefined
   if (roles && !roles.includes(auth.isAdmin ? 'admin' : 'user')) return { name: 'forbidden' }
   return true
+})
+
+router.afterEach((to) => {
+  document.title = `${to.meta.title ?? 'SubLedger'} · 订阅本`
 })
 
 export default router

@@ -6,7 +6,7 @@ import 'element-plus/es/components/table-column/style/css'
 import { ElButton, ElTable, ElTableColumn } from 'element-plus'
 import type { LogFile } from '@/types/api'
 import { formatDateTime, formatFileSize } from '@/utils/format'
-defineProps<{ files: LogFile[]; downloading?: string | null }>()
+defineProps<{ files: LogFile[]; downloading?: string | null; timezone?: string }>()
 defineEmits<{ download: [filename?: string] }>()
 </script>
 
@@ -19,7 +19,7 @@ defineEmits<{ download: [filename?: string] }>()
         <template #default="{ row }">{{ formatFileSize(row.size) }}</template>
       </el-table-column>
       <el-table-column label="最后修改" width="180" class-name="tabular-nums">
-        <template #default="{ row }">{{ formatDateTime(row.modified_at) }}</template>
+        <template #default="{ row }">{{ formatDateTime(row.modified_at, timezone) }}</template>
       </el-table-column>
       <el-table-column label="操作" width="90" align="right">
         <template #default="{ row }">
@@ -60,7 +60,7 @@ defineEmits<{ download: [filename?: string] }>()
           </div>
           <div>
             <dt>最后修改</dt>
-            <dd class="tabular-nums">{{ formatDateTime(file.modified_at) }}</dd>
+            <dd class="tabular-nums">{{ formatDateTime(file.modified_at, timezone) }}</dd>
           </div>
         </dl>
       </li>
@@ -91,7 +91,7 @@ defineEmits<{ download: [filename?: string] }>()
 }
 .log-card-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: var(--sl-space-3);
 }

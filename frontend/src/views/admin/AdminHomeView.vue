@@ -7,11 +7,12 @@ import 'element-plus/es/components/table-column/style/css'
 import 'element-plus/es/components/tag/style/css'
 
 import { ElAlert, ElButton, ElCard, ElTable, ElTableColumn, ElTag } from 'element-plus'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useQueryRequest } from '@/composables/useQueryRequest'
 import { formatDateTime } from '@/utils/format'
 import { getHealth, getRuntime } from '@/api/users'
 import { getAdminSummary } from '@/api/users'
+import { useAuthStore } from '@/stores/auth'
 import {
   ApiError,
   type AdminSummary,
@@ -22,10 +23,17 @@ import {
 import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingBlock from '@/components/common/LoadingBlock.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import RecordCard from '@/components/common/RecordCard.vue'
+import StatusTag from '@/components/common/StatusTag.vue'
+
+const auth = useAuthStore()
+const timezoneLabel = computed(() => auth.user?.timezone || '浏览器时区')
 
 const summary = ref<AdminSummary | null>(null)
 const health = ref<HealthResponse | null>(null)
 const loading = ref(true)
+const hasLoaded = ref(false)
+const fetchedAt = ref<Date | null>(null)
 const error = ref('')
 const healthError = ref('')
 const runtime = ref<RuntimeResponse | null>(null)
@@ -47,14 +55,29 @@ const taskTypes = {
   error: 'danger',
   disabled: 'info',
 } as const
-const dateText = (value: string | null) => (value ? formatDateTime(value) : '—')
+const dateText = (value: string | null) =>
+  value ? formatDateTime(value, auth.user?.timezone) : '—'
 const taskResult = (task: RuntimeTask) =>
-  task.last_error ||
-  (task.counts?.removed != null
+  task.counts?.removed != null
     ? `已清理 ${task.counts.removed} 条`
     : task.counts?.sent != null
       ? `成功 ${task.counts.sent}，失败 ${task.counts.failed}，未知 ${task.counts.unknown}`
-      : '—')
+      : '—'
+function clockText(value: Date) {
+  const options: Intl.DateTimeFormatOptions = {
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }
+  try {
+    return new Intl.DateTimeFormat('zh-CN', { ...options, timeZone: auth.user?.timezone }).format(
+      value,
+    )
+  } catch (cause) {
+    if (!(cause instanceof RangeError)) throw cause
+    return new Intl.DateTimeFormat('zh-CN', options).format(value)
+  }
+}
 async function load() {
   const signal = queries.next()
   loading.value = true
@@ -67,6 +90,7 @@ async function load() {
     getRuntime(signal),
   ])
   if (signal.aborted) return
+  fetchedAt.value = new Date()
   const [accountResult, healthResult, runtimeResult] = results
   if (accountResult.status === 'fulfilled') summary.value = accountResult.value
   else {
@@ -87,17 +111,22 @@ async function load() {
       runtimeResult.reason instanceof ApiError ? runtimeResult.reason.message : '无法获取任务状态'
   }
   loading.value = false
+  hasLoaded.value = true
 }
 onMounted(load)
 </script>
 
 <template>
   <div class="page-container">
-    <PageHeader title="管理首页" description="查看账户数量和系统健康状态"
+    <PageHeader
+      title="管理首页"
+      :description="`查看账户数量和系统健康状态。时间按账户时区 ${timezoneLabel} 显示`"
       ><template #actions
+        ><span v-if="fetchedAt" class="fetched-at tabular-nums"
+          >数据获取于 {{ clockText(fetchedAt) }}</span
         ><el-button :loading="loading" @click="load">刷新</el-button></template
       ></PageHeader
-    ><LoadingBlock v-if="loading" label="正在读取账户与系统状态" /><template v-else
+    ><LoadingBlock v-if="!hasLoaded" label="正在读取账户与系统状态" /><template v-else
       ><el-alert
         v-if="error"
         :title="error"
@@ -216,54 +245,87 @@ onMounted(load)
             align="right"
             class-name="tabular-nums"
           />
-          <el-table-column label="执行结果" min-width="170"
-            ><template #default="{ row }">{{
-              taskResult(row as RuntimeTask)
-            }}</template></el-table-column
+          <el-table-column label="执行结果" min-width="190"
+            ><template #default="{ row }"
+              ><span class="task-result-text"
+                >{{ taskResult(row as RuntimeTask)
+                }}<StatusTag
+                  v-if="row.last_error"
+                  class="error-tag"
+                  active
+                  active-text="出错"
+                  tone="danger"
+                  :title="row.last_error"
+                /><small v-if="row.last_error" class="error-class">{{
+                  row.last_error
+                }}</small></span
+              ></template
+            ></el-table-column
           >
         </el-table>
-        <ul v-if="runtime.tasks.length" class="task-cards" aria-label="定时任务">
-          <li v-for="task in runtime.tasks" :key="task.id" class="task-card">
-            <div class="task-card-header">
-              <h3>{{ task.name }}</h3>
-              <el-tag :type="taskTypes[task.status]">{{ taskLabels[task.status] }}</el-tag>
-            </div>
-            <dl>
-              <div>
-                <dt>最近成功</dt>
-                <dd class="tabular-nums">{{ dateText(task.last_success_at) }}</dd>
-              </div>
-              <div>
-                <dt>下次执行</dt>
-                <dd class="tabular-nums">{{ dateText(task.next_run_at) }}</dd>
-              </div>
-              <div>
-                <dt>耗时</dt>
-                <dd class="tabular-nums">
-                  {{ task.duration_seconds == null ? '—' : `${task.duration_seconds} 秒` }}
-                </dd>
-              </div>
-              <div>
-                <dt>连续失败</dt>
-                <dd class="tabular-nums">{{ task.consecutive_failures }}</dd>
-              </div>
-              <div class="task-result">
-                <dt>执行结果</dt>
-                <dd>{{ taskResult(task) }}</dd>
-              </div>
-            </dl>
-          </li>
-        </ul>
+        <div v-if="runtime.tasks.length" class="task-cards sl-stagger">
+          <RecordCard
+            v-for="(task, index) in runtime.tasks"
+            :key="task.id"
+            :style="{ '--i': Math.min(index, 8) }"
+          >
+            <template #title
+              ><h3>{{ task.name }}</h3></template
+            >
+            <template #amount
+              ><el-tag :type="taskTypes[task.status]">{{
+                taskLabels[task.status]
+              }}</el-tag></template
+            >
+            <template #meta
+              ><dl>
+                <div>
+                  <dt>最近成功</dt>
+                  <dd class="tabular-nums">{{ dateText(task.last_success_at) }}</dd>
+                </div>
+                <div>
+                  <dt>下次执行</dt>
+                  <dd class="tabular-nums">{{ dateText(task.next_run_at) }}</dd>
+                </div>
+                <div>
+                  <dt>耗时</dt>
+                  <dd class="tabular-nums">
+                    {{ task.duration_seconds == null ? '—' : `${task.duration_seconds} 秒` }}
+                  </dd>
+                </div>
+                <div>
+                  <dt>连续失败</dt>
+                  <dd class="tabular-nums">{{ task.consecutive_failures }}</dd>
+                </div>
+                <div>
+                  <dt>执行结果</dt>
+                  <dd class="task-result-text">
+                    {{ taskResult(task)
+                    }}<StatusTag
+                      v-if="task.last_error"
+                      class="error-tag"
+                      active
+                      active-text="出错"
+                      tone="danger"
+                      :title="task.last_error"
+                    /><small v-if="task.last_error" class="error-class">{{
+                      task.last_error
+                    }}</small>
+                  </dd>
+                </div>
+              </dl></template
+            >
+          </RecordCard>
+        </div>
       </el-card>
     </template>
   </div>
 </template>
 
 <style scoped>
+/* Three account metrics; column breakpoints follow the global .card-grid (900px / 480px). */
 .card-grid {
-  display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--sl-space-4);
   margin-bottom: var(--sl-space-5);
 }
 .card-grid strong {
@@ -303,59 +365,63 @@ onMounted(load)
   min-width: 0;
   flex-wrap: wrap;
 }
-.task-cards {
-  display: none;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.fetched-at {
+  color: var(--sl-text-muted);
+  font-size: var(--sl-font-size-sm);
 }
-.task-card {
-  padding: var(--sl-space-4) 0;
-  border-top: 1px solid var(--sl-border);
+.task-result-text {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sl-space-2);
 }
-.task-card:last-child {
-  padding-bottom: 0;
+.error-tag {
+  font-size: var(--sl-font-size-xs);
+  cursor: help;
 }
-.task-card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: var(--sl-space-3);
-}
-.task-card-header h3 {
-  margin: 0;
-  font-size: var(--sl-font-size);
-  min-width: 0;
+.error-class {
+  flex-basis: 100%;
+  color: var(--sl-danger-text);
+  font-size: var(--sl-font-size-xs);
   overflow-wrap: anywhere;
 }
-.task-card dl {
-  margin: var(--sl-space-3) 0 0;
+.task-cards {
+  display: none;
+  flex-direction: column;
+  gap: var(--sl-space-3);
 }
-.task-card dl > div {
+.task-cards h3 {
+  margin: 0;
+  font-size: var(--sl-font-size);
+}
+.task-cards dl {
+  margin: 0;
+}
+.task-cards dl > div {
   display: flex;
   justify-content: space-between;
   gap: var(--sl-space-4);
-  margin-top: var(--sl-space-2);
+  margin-top: var(--sl-space-1);
 }
-.task-card dt {
-  color: var(--sl-text-muted);
+.task-cards dt {
   flex-shrink: 0;
 }
-.task-card dd {
+.task-cards dd {
   margin: 0;
   min-width: 0;
+  color: var(--sl-text);
   text-align: right;
   overflow-wrap: anywhere;
 }
-.task-card .task-result {
-  display: block;
+.task-cards dd.task-result-text {
+  justify-content: flex-end;
 }
-.task-result dd {
-  margin-top: var(--sl-space-1);
-  text-align: left;
+@media (max-width: 900px) {
+  .card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 @media (max-width: 700px) {
-  .card-grid,
   .health-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -363,10 +429,10 @@ onMounted(load)
     display: none;
   }
   .task-cards {
-    display: block;
+    display: flex;
   }
 }
-@media (max-width: 420px) {
+@media (max-width: 480px) {
   .card-grid,
   .health-grid {
     grid-template-columns: 1fr;

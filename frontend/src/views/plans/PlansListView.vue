@@ -31,6 +31,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingBlock from '@/components/common/LoadingBlock.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import RecordCard from '@/components/common/RecordCard.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
 import MoneyText from '@/components/common/MoneyText.vue'
 import { cycleParts, formatCycle, formatDate, formatDateTime } from '@/utils/format'
@@ -138,9 +139,15 @@ async function toggle(plan: BillPlan) {
   try {
     if (wasEnabled)
       await ElMessageBox.confirm(
-        `规则「${plan.name}」(#${id})。停用后将不再生成新账单，当前未过账单将失效，不再参与月均和日均统计，也不再发送提醒。历史账单会保留。`,
+        `规则「${plan.name}」(#${id})。停用后将不再生成新账单，当前未过账单将失效，不再参与月均和日均统计，也不再发送提醒；今日、本月、全年合计会同步减少。历史账单会保留。`,
         '确认停用账单规则',
         { type: 'warning', confirmButtonText: '停用', cancelButtonText: '取消' },
+      )
+    else
+      await ElMessageBox.confirm(
+        `规则「${plan.name}」(#${id})。启用后会恢复因停用而失效的今日及未来账单，补齐后续账单并恢复提醒。手动标记无效的账单不会恢复。`,
+        '确认启用账单规则',
+        { type: 'info', confirmButtonText: '启用', cancelButtonText: '取消' },
       )
     if (!current() || plans.value.find((row) => row.id === id)?.is_enabled !== wasEnabled) return
     operationMessage.value = ''
@@ -212,6 +219,7 @@ onMounted(load)
           v-model="search"
           :disabled="actionId !== null"
           clearable
+          maxlength="128"
           placeholder="搜索名称"
           style="max-width: 240px"
         /><el-select
@@ -237,7 +245,7 @@ onMounted(load)
         ><el-button :disabled="actionId !== null" @click="resetFilters">重置</el-button>
       </div>
       <p class="hint">{{ filtered.length }} 条规则；名称搜索即时生效。</p>
-      <LoadingBlock v-if="loading && !hasLoaded" /><ErrorState
+      <LoadingBlock v-if="loading && !hasLoaded" variant="table" /><ErrorState
         v-if="error"
         :message="hasLoaded ? '刷新失败，以下保留上次结果：' + error.message : error.message"
         :request-id="error.requestId"
@@ -251,36 +259,37 @@ onMounted(load)
         title="没有匹配的账单规则"
         description="请调整筛选条件"
       /><el-table v-if="filtered.length" :data="filtered" stripe class="desktop-plans"
-        ><el-table-column prop="name" label="名称" min-width="160" /><el-table-column
+        ><el-table-column prop="name" label="名称" min-width="140" /><el-table-column
           label="金额"
-          width="150"
+          width="120"
           align="right"
           class-name="numeric"
           ><template #default="{ row }"
             ><MoneyText
               :value="row.amount"
               :currency="auth.user?.currency_code" /></template></el-table-column
-        ><el-table-column label="周期" width="130"
+        ><el-table-column label="周期" min-width="110"
           ><template #default="{ row }">{{
             formatCycle(row.cycle_type, row.cycle_days, row.cycle_interval)
           }}</template></el-table-column
-        ><el-table-column label="首次日期" width="130"
+        ><el-table-column label="首次日期" width="120"
           ><template #default="{ row }">{{
             formatDate(row.first_due_date)
           }}</template></el-table-column
-        ><el-table-column label="状态" width="100"
+        ><el-table-column label="状态" width="84"
           ><template #default="{ row }"
             ><StatusTag :active="row.is_enabled" /></template></el-table-column
-        ><el-table-column label="更新时间" width="180"
+        ><el-table-column label="更新时间" min-width="160"
           ><template #default="{ row }">{{
             formatDateTime(row.updated_at, auth.user?.timezone)
           }}</template></el-table-column
-        ><el-table-column label="操作" fixed="right" width="230"
+        ><el-table-column label="操作" fixed="right" width="140"
           ><template #default="{ row }"
             ><el-button link type="primary" :disabled="actionId !== null" @click="viewPlan(row.id)"
               >查看</el-button
             ><el-dropdown trigger="click" :disabled="actionId !== null"
-              ><el-button link :disabled="actionId !== null">更多</el-button
+              ><el-button link :disabled="actionId !== null" :loading="actionId === row.id"
+                >更多</el-button
               ><template #dropdown
                 ><el-dropdown-menu
                   ><el-dropdown-item @click="toggle(row as BillPlan)">{{
@@ -295,22 +304,35 @@ onMounted(load)
           ></el-table-column
         ></el-table
       >
-      <div class="mobile-plans">
-        <article v-for="plan in filtered" :key="plan.id" class="mobile-plan">
-          <div class="record-line">
-            <el-button
+      <div class="mobile-plans sl-stagger">
+        <RecordCard
+          v-for="(plan, index) in filtered"
+          :key="plan.id"
+          :style="{ '--i': Math.min(index, 8) }"
+        >
+          <template #title
+            ><el-button
               link
               type="primary"
               :disabled="actionId !== null"
               @click="viewPlan(plan.id)"
               >{{ plan.name }}</el-button
-            ><MoneyText class="numeric" :value="plan.amount" :currency="auth.user?.currency_code" />
-          </div>
-          <p class="hint">
-            {{ formatCycle(plan.cycle_type, plan.cycle_days, plan.cycle_interval) }} ·
-            {{ plan.is_enabled ? '启用' : '停用' }}
-          </p>
-          <div class="record-actions">
+            ></template
+          >
+          <template #amount
+            ><MoneyText class="numeric" :value="plan.amount" :currency="auth.user?.currency_code"
+          /></template>
+          <template #meta>
+            <span class="meta-line"
+              ><StatusTag :active="plan.is_enabled" /> ·
+              {{ formatCycle(plan.cycle_type, plan.cycle_days, plan.cycle_interval) }}</span
+            >
+            <span class="meta-line">首次日期 {{ formatDate(plan.first_due_date) }}</span>
+            <span class="meta-line"
+              >更新时间 {{ formatDateTime(plan.updated_at, auth.user?.timezone) }}</span
+            >
+          </template>
+          <template #actions>
             <el-button :disabled="actionId !== null" @click="viewPlan(plan.id)">查看规则</el-button
             ><el-dropdown trigger="click" :disabled="actionId !== null"
               ><el-button :disabled="actionId !== null" :loading="actionId === plan.id"
@@ -326,8 +348,8 @@ onMounted(load)
                 ></template
               ></el-dropdown
             >
-          </div>
-        </article>
+          </template>
+        </RecordCard>
       </div>
       <div v-if="!loading && !error && !filtered.length" class="filters">
         <el-button @click="resetFilters">清除筛选</el-button
@@ -344,35 +366,17 @@ onMounted(load)
 }
 .mobile-plans {
   display: none;
+  flex-direction: column;
+  gap: var(--sl-space-3);
 }
-.mobile-plan {
-  padding: 16px 0;
-  border-bottom: 1px solid var(--sl-border);
-}
-.record-line {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-.record-line > .el-button {
-  flex: 1;
-  min-width: 0;
-  white-space: normal;
-  text-align: left;
+.mobile-plans .el-button.is-link {
   justify-content: flex-start;
+  text-align: left;
+  white-space: normal;
   overflow-wrap: anywhere;
 }
-.record-line > .numeric {
-  flex-shrink: 0;
-  text-align: right;
-}
-.record-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-.record-actions .el-button {
-  margin-left: 0;
+.meta-line {
+  display: block;
 }
 .desktop-plans :deep(.cell) {
   overflow-wrap: anywhere;
@@ -382,7 +386,7 @@ onMounted(load)
     display: none;
   }
   .mobile-plans {
-    display: block;
+    display: flex;
   }
   .filter-bar > :deep(.el-input),
   .filter-bar > :deep(.el-select) {

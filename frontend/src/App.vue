@@ -15,7 +15,14 @@ async function retry() {
   retrying.value = true
   try {
     await auth.initialize()
-    await router.replace(router.currentRoute.value.fullPath)
+    const current = router.currentRoute.value
+    // force re-runs the navigation guards for the same URL.
+    await router.replace({
+      path: current.path,
+      query: current.query,
+      hash: current.hash,
+      force: true,
+    })
   } catch {
     // Keep the retry screen visible on a repeated network failure.
   } finally {

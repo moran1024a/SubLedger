@@ -35,11 +35,15 @@ export function formatDate(value: string): string {
 }
 
 export function formatDateTime(value: string, timezone?: string): string {
-  return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: timezone,
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(value))
+  const options: Intl.DateTimeFormatOptions = { dateStyle: 'medium', timeStyle: 'short' }
+  const date = new Date(value)
+  try {
+    return new Intl.DateTimeFormat('zh-CN', { ...options, timeZone: timezone }).format(date)
+  } catch (error) {
+    // An unsupported time zone falls back to the browser zone instead of breaking the page.
+    if (!(error instanceof RangeError)) throw error
+    return new Intl.DateTimeFormat('zh-CN', options).format(date)
+  }
 }
 
 export const cycleLimits = { day: 36500, week: 5214, month: 1200, year: 100 }

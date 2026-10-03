@@ -5,6 +5,7 @@ export function login(username: string, password: string) {
   return request<CurrentUser>('/auth/login', {
     method: 'POST',
     body: JSON.stringify({ username, password }),
+    timeoutMs: 15000,
   })
 }
 
@@ -13,5 +14,5 @@ export function getCurrentUser() {
 }
 
 export function logout() {
-  return request<void>('/auth/logout', { method: 'POST' })
+  return request<void>('/auth/logout', { method: 'POST', timeoutMs: 10000 })
 }

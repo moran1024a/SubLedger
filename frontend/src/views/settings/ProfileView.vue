@@ -32,6 +32,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import OperationFeedback from '@/components/common/OperationFeedback.vue'
 import { asApiError, getFieldErrors, isUncertainWrite, writeErrorMessage } from '@/utils/apiErrors'
 import { useRouter } from 'vue-router'
+import { isValidCurrencyCode } from '@/utils/validation'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -46,6 +47,7 @@ const profileUncertain = ref(false)
 const passwordUncertain = ref(false)
 const profileError = ref('')
 const profileFieldErrors = ref<Record<string, string>>({})
+const passwordFieldErrors = ref<Record<string, string>>({})
 const pageRoot = ref<HTMLElement | null>(null)
 const profile = reactive({ username: '', timezone: '', currency_code: '' })
 const password = reactive({ current: '', next: '', confirm: '' })
@@ -69,6 +71,8 @@ watch(
     Object.assign(password, { current: '', next: '', confirm: '' })
     profileError.value = ''
     passwordError.value = ''
+    profileFieldErrors.value = {}
+    passwordFieldErrors.value = {}
     profileUncertain.value = false
     passwordUncertain.value = false
     baseline.value = JSON.stringify(profile)
@@ -97,6 +101,11 @@ async function confirm(message: string) {
     return false
   }
 }
+function setCurrency(value: unknown) {
+  profile.currency_code = String(value ?? '')
+    .trim()
+    .toUpperCase()
+}
 async function focusError() {
   const current = scope.capture()
   await nextTick()
@@ -108,6 +117,11 @@ async function saveProfile() {
   profileFieldErrors.value = {}
   if (!profile.username.trim()) {
     profileError.value = '用户名不能为空'
+    return
+  }
+  if (!isValidCurrencyCode(profile.currency_code)) {
+    profileFieldErrors.value = { currency_code: '货币代码需为 3 到 8 位大写字母' }
+    void focusError()
     return
   }
   saving.value = true
@@ -149,12 +163,13 @@ async function saveProfile() {
 async function savePassword() {
   if (busy.value || !auth.user) return
   if (!passwordUncertain.value) passwordError.value = ''
-  if (password.next.length < 8) {
-    ElMessage.error('新密码至少 8 个字符')
-    return
-  }
-  if (password.next !== password.confirm) {
-    ElMessage.error('两次新密码不一致')
+  const errors: Record<string, string> = {}
+  if (!password.current) errors.current = '请输入当前密码'
+  if (password.next.length < 8) errors.next = '新密码至少 8 个字符'
+  else if (password.next !== password.confirm) errors.confirm = '两次新密码不一致'
+  passwordFieldErrors.value = errors
+  if (Object.keys(errors).length) {
+    void focusError()
     return
   }
   passwordSaving.value = true
@@ -183,8 +198,15 @@ async function savePassword() {
     await router.replace('/login')
   } catch (cause) {
     if (!current()) return
+    const fields = getFieldErrors(cause)
+    passwordFieldErrors.value = Object.fromEntries(
+      Object.entries({ current: fields.current_password, next: fields.new_password }).filter(
+        ([, message]) => message,
+      ),
+    )
     passwordUncertain.value = isUncertainWrite(cause)
     passwordError.value = writeErrorMessage(cause)
+    if (Object.keys(passwordFieldErrors.value).length) void focusError()
   } finally {
     if (current()) passwordSaving.value = false
   }
@@ -208,7 +230,7 @@ async function checkProfile() {
 
 <template>
   <div ref="pageRoot" class="page-container">
-    <PageHeader title="个人设置" />
+    <PageHeader title="个人设置" description="修改用户名、时区、默认货币和密码" />
     <p v-if="dirty" class="hint" role="status">有未保存的修改</p>
     <div class="settings-grid">
       <el-card
@@ -230,13 +252,20 @@ async function checkProfile() {
                 :label="timezone"
                 :value="timezone" /></el-select></el-form-item
           ><el-form-item label="默认货币" :error="profileFieldErrors.currency_code"
-            ><el-select v-model="profile.currency_code" style="width: 100%"
+            ><el-select
+              :model-value="profile.currency_code"
+              filterable
+              allow-create
+              default-first-option
+              style="width: 100%"
+              @update:model-value="setCurrency"
               ><el-option
                 v-for="currency in currencies"
                 :key="currency"
                 :label="currency"
                 :value="currency" /></el-select
-          ></el-form-item>
+            ><span class="field-help">可直接输入其他 3 到 8 位代码</span></el-form-item
+          >
           <p class="hint">时区影响账单日期和提醒时间；默认货币仅改变显示，不进行汇率换算。</p>
           <OperationFeedback
             :message="profileError"
@@ -261,19 +290,19 @@ async function checkProfile() {
       ><el-card
         ><template #header>修改密码</template
         ><el-form label-position="top" :disabled="busy"
-          ><el-form-item label="当前密码"
+          ><el-form-item label="当前密码" :error="passwordFieldErrors.current"
             ><el-input
               v-model="password.current"
               type="password"
               show-password
               autocomplete="current-password" /></el-form-item
-          ><el-form-item label="新密码"
+          ><el-form-item label="新密码" :error="passwordFieldErrors.next"
             ><el-input
               v-model="password.next"
               type="password"
               show-password
               autocomplete="new-password" /></el-form-item
-          ><el-form-item label="确认新密码"
+          ><el-form-item label="确认新密码" :error="passwordFieldErrors.confirm"
             ><el-input
               v-model="password.confirm"
               type="password"
@@ -303,6 +332,14 @@ async function checkProfile() {
   color: var(--sl-text-muted);
   font-size: 13px;
   line-height: 1.7;
+}
+.field-help {
+  display: block;
+  width: 100%;
+  color: var(--sl-text-muted);
+  font-size: var(--sl-font-size-xs);
+  line-height: 1.5;
+  margin-top: var(--sl-space-1);
 }
 .settings-grid {
   display: grid;

@@ -55,8 +55,8 @@ const plan: BillPlan = {
   is_enabled: true,
   note: null,
   future_bills_rebuilt: false,
-  created_at: '',
-  updated_at: '',
+  created_at: '2026-07-01T00:00:00Z',
+  updated_at: '2026-07-01T00:00:00Z',
 }
 const payload: BillPlanPayload = {
   name: plan.name,
@@ -180,18 +180,56 @@ describe('billing writes remain scoped to their resource', () => {
     expect(ElMessage.success).not.toHaveBeenCalled()
   })
 
-  it('blocks a duplicate uncertain create and never matches it to a similar rule', async () => {
-    vi.mocked(createPlan).mockRejectedValue(timeout())
-    const { wrapper } = await view(PlanFormView, '/plans/new')
+  it('confirms before resubmitting an uncertain create and never matches it to a similar rule', async () => {
+    vi.mocked(createPlan).mockRejectedValueOnce(timeout()).mockResolvedValueOnce(plan)
+    const { router, wrapper } = await view(PlanFormView, '/plans/new', {
+      BillPlanForm: false,
+      'el-form': { template: '<form><slot /></form>' },
+      'el-form-item': { template: '<div><slot /></div>' },
+    })
     const vm = wrapper.vm as unknown as {
       save: (value: BillPlanPayload) => Promise<void>
       operationMessage: string
+      submitting: boolean
     }
     await vm.save(payload)
-    await vm.save(payload)
     expect(createPlan).toHaveBeenCalledOnce()
-    expect(listPlans).not.toHaveBeenCalled()
+    expect(ElMessageBox.confirm).not.toHaveBeenCalled()
     expect(vm.operationMessage).toContain('结果待确认')
+
+    vi.mocked(ElMessageBox.confirm).mockRejectedValueOnce('cancel')
+    await vm.save(payload)
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('重复创建会产生两条规则'),
+      '确认再次提交',
+      expect.objectContaining({ confirmButtonText: '继续提交', cancelButtonText: '取消' }),
+    )
+    expect(createPlan).toHaveBeenCalledOnce()
+    expect(vm.operationMessage).toContain('结果待确认')
+    expect(vm.submitting).toBe(false)
+
+    await vm.save(payload)
+    await flushPromises()
+    expect(ElMessageBox.confirm).toHaveBeenCalledTimes(2)
+    expect(createPlan).toHaveBeenCalledTimes(2)
+    expect(listPlans).not.toHaveBeenCalled()
+    expect(router.currentRoute.value.path).toBe('/plans/2')
+  })
+
+  it('opens the rule list in a new tab to verify an uncertain create without losing the draft', async () => {
+    vi.mocked(createPlan).mockRejectedValue(timeout())
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    const { router, wrapper } = await view(PlanFormView, '/plans/new')
+    await (wrapper.vm as unknown as { save: (value: BillPlanPayload) => Promise<void> }).save(
+      payload,
+    )
+    await flushPromises()
+    const feedback = wrapper.findComponent(OperationFeedback)
+    expect(feedback.props('action')).toBe('查看最近规则，核实是否已创建')
+    feedback.vm.$emit('check')
+    expect(open).toHaveBeenCalledWith('/plans', '_blank', 'noopener')
+    expect(router.currentRoute.value.path).toBe('/plans/new')
+    open.mockRestore()
   })
 
   it('does not confirm a representational amount or legacy cycle change', async () => {

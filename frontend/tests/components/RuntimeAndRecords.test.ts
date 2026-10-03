@@ -1,6 +1,10 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createRouter, createMemoryHistory } from 'vue-router'
-import { createPinia } from 'pinia'
+import { createPinia, setActivePinia } from 'pinia'
+import { useAuthStore } from '@/stores/auth'
+import { formatDateTime } from '@/utils/format'
+import StatusTag from '@/components/common/StatusTag.vue'
+import LoadingBlock from '@/components/common/LoadingBlock.vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AdminHomeView from '@/views/admin/AdminHomeView.vue'
 import NotificationRecords from '@/components/notifications/NotificationRecords.vue'
@@ -46,12 +50,98 @@ describe('runtime status', () => {
       ],
     })
     const wrapper = mount(AdminHomeView, {
-      global: { stubs: { 'el-table': TaskTable, 'el-card': { template: '<div><slot /></div>' } } },
+      global: {
+        plugins: [createPinia()],
+        stubs: { 'el-table': TaskTable, 'el-card': { template: '<div><slot /></div>' } },
+      },
     })
     await flushPromises()
     expect(wrapper.text()).toContain('通知检查')
     expect(wrapper.text()).toContain('DatabaseError')
     wrapper.unmount()
+  })
+})
+
+describe('admin home timezone and task results', () => {
+  const successAt = '2026-07-20T00:30:00Z'
+  function runtimeWithError() {
+    return {
+      status: 'error' as const,
+      tasks: [
+        {
+          id: 'notification_check',
+          name: '通知检查',
+          status: 'warning' as const,
+          next_run_at: null,
+          last_started_at: null,
+          last_finished_at: null,
+          last_success_at: successAt,
+          duration_seconds: 2,
+          consecutive_failures: 1,
+          last_error: 'SMTPException',
+          counts: { sent: 3, failed: 1, unknown: 0 },
+        },
+      ],
+    }
+  }
+  function mountHome() {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().setUser({
+      id: 0,
+      username: 'admin',
+      role: 'admin',
+      is_active: true,
+      timezone: 'Asia/Tokyo',
+      currency_code: 'CNY',
+      created_at: '',
+      updated_at: '',
+    })
+    return mount(AdminHomeView, {
+      global: {
+        plugins: [pinia],
+        stubs: { 'el-table': true, 'el-card': { template: '<div><slot /></div>' } },
+      },
+    })
+  }
+  beforeEach(() => {
+    vi.mocked(getAdminSummary).mockResolvedValue({
+      total_users: 2,
+      active_users: 1,
+      inactive_users: 0,
+    })
+    vi.mocked(getHealth).mockResolvedValue({
+      status: 'ok',
+      application: 'ok',
+      database: 'ok',
+      scheduler: 'ok',
+    })
+    vi.mocked(getRuntime).mockResolvedValue(runtimeWithError())
+  })
+
+  it('formats task times in the account timezone and keeps counts beside the error tag', async () => {
+    const wrapper = mountHome()
+    await flushPromises()
+    expect(formatDateTime(successAt, 'Asia/Tokyo')).not.toBe(formatDateTime(successAt, 'UTC'))
+    expect(wrapper.text()).toContain('时间按账户时区 Asia/Tokyo 显示')
+    expect(wrapper.text()).toContain(formatDateTime(successAt, 'Asia/Tokyo'))
+    expect(wrapper.text()).toContain('成功 3，失败 1，未知 0')
+    expect(wrapper.text()).toMatch(/数据获取于 \d{2}:\d{2}/)
+    const tag = wrapper
+      .findAllComponents(StatusTag)
+      .find((item) => item.props('tone') === 'danger')!
+    expect(tag.attributes('title')).toBe('SMTPException')
+    expect(wrapper.find('.error-class').text()).toBe('SMTPException')
+  })
+
+  it('keeps the loaded tasks visible while refreshing', async () => {
+    const wrapper = mountHome()
+    await flushPromises()
+    vi.mocked(getRuntime).mockReturnValue(new Promise(() => {}))
+    void (wrapper.vm as unknown as { load: () => Promise<void> }).load()
+    await flushPromises()
+    expect(wrapper.findComponent(LoadingBlock).exists()).toBe(false)
+    expect(wrapper.text()).toContain('通知检查')
   })
 })
 

@@ -33,6 +33,8 @@ import { isNavigationFailure, useRoute, useRouter } from 'vue-router'
 import { notificationLabels as labels, readNotificationQuery } from '@/utils/notificationFilters'
 import LoadingBlock from '@/components/common/LoadingBlock.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
+import RecordCard from '@/components/common/RecordCard.vue'
+import StatusTag from '@/components/common/StatusTag.vue'
 
 const auth = useAuthStore(),
   route = useRoute(),
@@ -52,6 +54,8 @@ const queries = useQueryRequest()
 let applied: NotificationFilters = {}
 const dateText = (value: string | null) =>
   value ? formatDateTime(value, auth.user?.timezone) : '—'
+const statusTone = (value: NotificationStatus) =>
+  value === 'sent' ? 'success' : value === 'failed' ? 'danger' : 'warning'
 async function load() {
   const signal = queries.next()
   const key = JSON.stringify({ ...applied, page: page.value, page_size: pageSize.value })
@@ -172,7 +176,7 @@ watch(
       ><el-button :loading="loading" @click="load">刷新</el-button
       ><el-button @click="reset">重置</el-button>
     </div>
-    <LoadingBlock v-if="loading && !hasLoaded" />
+    <LoadingBlock v-if="loading && !hasLoaded" variant="table" />
     <ErrorState
       v-if="error"
       :message="hasLoaded ? '刷新失败，以下保留上次结果：' + error.message : error.message"
@@ -215,25 +219,37 @@ watch(
           ></el-table-column
         >
       </el-table>
-      <div class="mobile-records">
-        <article v-for="record in records" :key="record.id">
-          <strong>{{ record.plan_name }}</strong>
-          <p>{{ record.channel === 'email' ? '邮件' : '飞书' }} · {{ labels[record.status] }}</p>
-          <p>
-            账单：{{ record.due_date }} ·
-            {{ record.reminder_type === 'advance' ? '提前提醒' : '当日提醒' }}
-          </p>
-          <p>计划提醒：{{ dateText(record.scheduled_at) }}</p>
-          <details>
-            <summary>查看发送详情</summary>
-            <p>尝试 {{ record.attempt_count }} 次</p>
-            <p>最近尝试：{{ dateText(record.last_attempt_at) }}</p>
-            <p>发送成功：{{ dateText(record.sent_at) }}</p>
-            <p>下次重试：{{ dateText(record.next_retry_at) }}</p>
-            <p>{{ record.error_message || '无错误信息' }}</p>
-          </details>
-        </article>
-        <p v-if="!records.length">暂无通知记录，可调整筛选条件。</p>
+      <div class="mobile-records sl-stagger">
+        <RecordCard
+          v-for="(record, index) in records"
+          :key="record.id"
+          :style="{ '--i': Math.min(index, 8) }"
+        >
+          <template #title>{{ record.plan_name }}</template>
+          <template #amount
+            ><StatusTag
+              active
+              :active-text="labels[record.status]"
+              :tone="statusTone(record.status)"
+          /></template>
+          <template #meta>
+            <p>
+              {{ record.channel === 'email' ? '邮件' : '飞书' }} ·
+              {{ record.reminder_type === 'advance' ? '提前提醒' : '当日提醒' }} · 账单
+              {{ record.due_date }}
+            </p>
+            <p>计划提醒：{{ dateText(record.scheduled_at) }}</p>
+            <details>
+              <summary>查看发送详情</summary>
+              <p>尝试 {{ record.attempt_count }} 次</p>
+              <p>最近尝试：{{ dateText(record.last_attempt_at) }}</p>
+              <p>发送成功：{{ dateText(record.sent_at) }}</p>
+              <p>下次重试：{{ dateText(record.next_retry_at) }}</p>
+              <p>{{ record.error_message || '无错误信息' }}</p>
+            </details>
+          </template>
+        </RecordCard>
+        <p v-if="!records.length" class="hint">暂无通知记录，可调整筛选条件。</p>
       </div>
       <el-pagination
         v-model:current-page="page"
@@ -254,22 +270,21 @@ summary {
 }
 .mobile-records {
   display: none;
-}
-.mobile-records article {
-  padding: 16px 0;
-  border-bottom: 1px solid var(--sl-border);
-  overflow-wrap: anywhere;
+  flex-direction: column;
+  gap: var(--sl-space-3);
 }
 .mobile-records p {
-  color: var(--sl-text-muted);
-  font-size: 13px;
+  margin: 0;
+}
+.mobile-records details p {
+  margin-top: var(--sl-space-1);
 }
 @media (max-width: 700px) {
   .desktop-records {
     display: none;
   }
   .mobile-records {
-    display: block;
+    display: flex;
   }
 }
 
@@ -278,6 +293,7 @@ summary {
   min-width: 0;
 }
 .hint {
+  margin: 0 0 var(--sl-space-3);
   color: var(--sl-text-muted);
   font-size: 14px;
 }

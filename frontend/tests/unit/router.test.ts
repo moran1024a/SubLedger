@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
+import type { RouteLocationNormalized } from 'vue-router'
 import router from '@/router'
 import { useAuthStore } from '@/stores/auth'
 import type { CurrentUser } from '@/types/api'
@@ -41,10 +42,43 @@ describe('route access', () => {
     expect(router.currentRoute.value.path).toBe('/403')
   })
 
+  it('titles the document with the route and product name', async () => {
+    useAuthStore().setUser(user('user'))
+    await router.push('/plans')
+    expect(document.title).toBe('账单规则 · 订阅本')
+    await router.push('/404')
+    expect(document.title).toBe('页面不存在 · 订阅本')
+  })
+
   it('redirects authenticated users away from login', async () => {
     useAuthStore().setUser(user('user'))
     await router.push('/404')
     await router.push('/login')
     expect(router.currentRoute.value.path).toBe('/')
+  })
+})
+
+describe('scroll restoration', () => {
+  it('restores a saved position only after the page leave transition', async () => {
+    vi.useFakeTimers()
+    try {
+      const scroll = router.options.scrollBehavior!
+      const at = (path: string) => router.resolve(path) as unknown as RouteLocationNormalized
+      const to = at('/plans')
+      const from = at('/bills')
+      const saved = { left: 0, top: 320 }
+      let restored: unknown = null
+      void Promise.resolve(scroll(to, from, saved)).then((value) => {
+        restored = value
+      })
+      await vi.advanceTimersByTimeAsync(100)
+      expect(restored).toBeNull()
+      await vi.advanceTimersByTimeAsync(100)
+      expect(restored).toEqual(saved)
+      expect(scroll(to, from, null)).toEqual({ top: 0 })
+      expect(scroll(to, at('/plans?page=2'), null)).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

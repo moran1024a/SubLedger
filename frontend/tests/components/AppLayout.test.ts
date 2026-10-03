@@ -10,9 +10,10 @@ import { ElMessage } from 'element-plus'
 
 const route = reactive({ path: '/admin/users', meta: { title: '用户管理' } })
 const replace = vi.fn()
+const push = vi.fn()
 vi.mock('vue-router', () => ({
   useRoute: () => route,
-  useRouter: () => ({ replace, push: vi.fn() }),
+  useRouter: () => ({ replace, push }),
 }))
 vi.mock('element-plus', async (importOriginal) => ({
   ...(await importOriginal<typeof import('element-plus')>()),
@@ -73,6 +74,27 @@ describe('AppLayout', () => {
     expect(wrapper.get('#desktop-navigation a').attributes('aria-current')).toBeUndefined()
   })
 
+  it('opens the profile from the user avatar instead of a duplicated text button', async () => {
+    const wrapper = mountLayout()
+
+    expect(wrapper.get('.user-avatar').text()).toBe('A')
+    expect(wrapper.get('.user-name').text()).toBe('admin')
+    expect(wrapper.get('.user-button').attributes('aria-label')).toBe('admin 的个人设置')
+    expect(wrapper.findAll('.topbar-user button')).toHaveLength(2)
+    await wrapper.get('.user-button').trigger('click')
+    expect(push).toHaveBeenCalledWith('/settings/profile')
+  })
+
+  it('references the mobile navigation only once the drawer has rendered it', async () => {
+    const wrapper = mountLayout()
+    const button = wrapper.get('.mobile-menu-button')
+
+    expect(button.attributes('aria-controls')).toBeUndefined()
+    await button.trigger('click')
+    expect(button.attributes('aria-controls')).toBe('mobile-navigation')
+    expect(wrapper.find('#mobile-navigation').exists()).toBe(true)
+  })
+
   it('keeps icons, visible tooltip content, and accessible labels when collapsed', async () => {
     const wrapper = mountLayout()
     await wrapper.get('.collapse-button').trigger('click')
@@ -103,8 +125,17 @@ describe('AppLayout', () => {
     await flushPromises()
     expect(useUiStore().mobileMenuOpen).toBe(false)
     expect(wrapper.get('#mobile-navigation .active').attributes('href')).toBe('/admin/logs/system')
+    // Closed by navigation: focus stays with the new page instead of the menu button.
+    wrapper.findComponent({ name: 'DrawerStub' }).vm.$emit('closed')
+    expect(document.activeElement).not.toBe(button.element)
+
+    // Closed by the user: focus returns to the menu button.
+    await button.trigger('click')
+    useUiStore().mobileMenuOpen = false
+    await flushPromises()
     wrapper.findComponent({ name: 'DrawerStub' }).vm.$emit('closed')
     expect(document.activeElement).toBe(button.element)
+    wrapper.unmount()
   })
 
   it('awaits the discard confirmation, prevents repeated requests, and preserves a cancelled session', async () => {
@@ -148,20 +179,17 @@ describe('AppLayout', () => {
     expect(replace).toHaveBeenCalledWith('/login')
   })
 
-  it('keeps the local session cleared when the logout request fails', async () => {
+  it('keeps the user signed in when the logout request fails', async () => {
     const wrapper = mountLayout()
     const auth = useAuthStore()
-    vi.spyOn(auth, 'logout').mockImplementation(async () => {
-      auth.clear()
-      throw new Error('network failure')
-    })
+    vi.spyOn(auth, 'logout').mockRejectedValue(new Error('network failure'))
     const vm = wrapper.vm as unknown as { logout: () => Promise<void>; loggingOut: boolean }
     await vm.logout()
 
-    expect(auth.user).toBeNull()
-    expect(replace).toHaveBeenCalledWith('/login')
+    expect(auth.user?.username).toBe('admin')
+    expect(replace).not.toHaveBeenCalled()
     expect(vm.loggingOut).toBe(false)
-    expect(ElMessage.error).toHaveBeenCalledWith('退出请求失败，本地登录状态已清除')
+    expect(ElMessage.error).toHaveBeenCalledWith('退出失败，请重试')
   })
 
   it('does not redirect or clear a new session after the old logout resolves', async () => {

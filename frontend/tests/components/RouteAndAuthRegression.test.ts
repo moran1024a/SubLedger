@@ -3,6 +3,9 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import { defineComponent } from 'vue'
+import App from '@/App.vue'
+import ErrorState from '@/components/common/ErrorState.vue'
+import appRouter from '@/router'
 import PlanDetailView from '@/views/plans/PlanDetailView.vue'
 import { getPlan, updatePlan } from '@/api/plans'
 import { getCurrentUser } from '@/api/auth'
@@ -81,6 +84,49 @@ it('temporary auth initialization failure allows a retry', async () => {
   await store.initialize()
   expect(getCurrentUser).toHaveBeenCalledTimes(2)
   expect(store.initialized).toBe(true)
+})
+
+const member = {
+  id: 1,
+  username: 'member',
+  role: 'user' as const,
+  is_active: true,
+  timezone: 'UTC',
+  currency_code: 'CNY',
+  created_at: '',
+  updated_at: '',
+}
+
+async function mountAppAt(path: string) {
+  await appRouter.replace(path)
+  await appRouter.isReady()
+  const host = mount(App, { global: { plugins: [appRouter], stubs: { RouterView: true } } })
+  await flushPromises()
+  return host
+}
+
+it.each([
+  ['admin', { ...member, id: 0, username: 'admin', role: 'admin' as const }, '/', '/admin'],
+  ['expired', null, '/plans', '/login'],
+])('re-runs the guards after retrying a failed initialization (%s)', async (_, next, from, to) => {
+  vi.mocked(getCurrentUser).mockRejectedValueOnce(
+    new ApiError({ status: 0, code: 'NETWORK', message: 'offline' }),
+  )
+  const host = await mountAppAt(from)
+  expect(useAuthStore().initializationError).toBeTruthy()
+  expect(appRouter.currentRoute.value.path).toBe(from)
+
+  if (next) vi.mocked(getCurrentUser).mockResolvedValueOnce(next)
+  else
+    vi.mocked(getCurrentUser).mockRejectedValueOnce(
+      new ApiError({ status: 401, code: 'AUTH_SESSION_INVALID', message: '会话失效' }),
+    )
+  host.findComponent(ErrorState).vm.$emit('retry')
+  await flushPromises()
+
+  expect(getCurrentUser).toHaveBeenCalledTimes(2)
+  await vi.waitFor(() => expect(appRouter.currentRoute.value.path).toBe(to))
+  host.unmount()
 })
 
 it('shares initialization and discards a response after logout', async () => {

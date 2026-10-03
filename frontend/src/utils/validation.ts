@@ -4,6 +4,10 @@ export function isValidAmount(value: string): boolean {
   )
 }
 
+export function isValidCurrencyCode(value: string): boolean {
+  return /^[A-Z]{3,8}$/.test(value)
+}
+
 export function isValidCycleDays(value: string): boolean {
   return /^[1-9]\d*$/.test(value) && Number(value) <= 36500
 }
@@ -29,11 +33,9 @@ export function validateNotificationSettings(
   webhookConfigured = false,
 ): Record<string, string> {
   const errors: Record<string, string> = {}
-  if (form.advance_enabled) {
-    if (!Number.isInteger(form.advance_days) || form.advance_days < 0 || form.advance_days > 365)
-      errors.advance_days = '提前天数必须是 0 到 365 的整数'
-    if (!form.advance_time) errors.advance_time = '请选择提前提醒时间'
-  }
+  if (!Number.isInteger(form.advance_days) || form.advance_days < 0 || form.advance_days > 365)
+    errors.advance_days = '提前天数必须是 0 到 365 的整数'
+  if (form.advance_enabled && !form.advance_time) errors.advance_time = '请选择提前提醒时间'
   if (form.same_day_enabled && !form.same_day_time) errors.same_day_time = '请选择当日提醒时间'
   if (form.email_enabled) {
     if (!form.smtp_host.trim()) errors.smtp_host = '请输入 SMTP 主机'

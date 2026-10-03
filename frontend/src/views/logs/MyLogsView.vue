@@ -11,6 +11,8 @@ import LoadingBlock from '@/components/common/LoadingBlock.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import LogFileTable from '@/components/logs/LogFileTable.vue'
+import { useAuthStore } from '@/stores/auth'
+const auth = useAuthStore()
 const { files, loading, error, downloading, load, downloadFile } = useLogFiles(
   getMyLogs,
   downloadMyLog,
@@ -22,6 +24,8 @@ onMounted(load)
   <div class="page-container">
     <PageHeader title="我的日志" description="按日期查看日志文件，或下载全部日志"
       ><template #actions
+        ><el-button :loading="loading" :disabled="downloading !== null" @click="load"
+          >刷新</el-button
         ><el-button
           type="primary"
           :disabled="loading || error !== null || !files.length || downloading !== null"
@@ -44,7 +48,11 @@ onMounted(load)
         ><span
           >日志文件 <span class="text-muted tabular-nums">（{{ files.length }}）</span></span
         ></template
-      ><LogFileTable :files="files" :downloading="downloading" @download="downloadFile"
+      ><LogFileTable
+        :files="files"
+        :downloading="downloading"
+        :timezone="auth.user?.timezone"
+        @download="downloadFile"
     /></el-card>
   </div>
 </template>

@@ -19,7 +19,13 @@ const router = useRouter()
 const loggingOut = ref(false)
 const mobileMenuButton = ref<HTMLElement | null>(null)
 const mobileNav = ref<HTMLElement | null>(null)
+const mobileNavRendered = ref(false)
+const mainArea = ref<HTMLElement | null>(null)
 const admin = computed(() => auth.isAdmin)
+const userInitial = computed(() => {
+  const name = auth.user?.username?.trim() ?? ''
+  return name ? [...name][0]!.toUpperCase() : '?'
+})
 const menu = computed(() =>
   admin.value
     ? [
@@ -42,20 +48,42 @@ function isMenuActive(path: string) {
   if (path === '/' || path === '/admin') return route.path === path
   return route.path === path || route.path.startsWith(`${path}/`)
 }
+// Set when the drawer closes because of navigation; focus then stays with the new page.
+let closedByRoute = false
 watch(
   () => route.path,
   () => {
+    if (ui.mobileMenuOpen) closedByRoute = true
     ui.mobileMenuOpen = false
+  },
+)
+// The drawer renders its content lazily, so the id is only referenced once it exists.
+watch(
+  () => ui.mobileMenuOpen,
+  (open) => {
+    if (open) mobileNavRendered.value = true
   },
 )
 function onMenuClick(path: string) {
   if (route.path === path) ui.mobileMenuOpen = false
+}
+function onMobileNavClosed() {
+  if (!closedByRoute) mobileMenuButton.value?.focus()
+  closedByRoute = false
 }
 function focusMobileNavigation() {
   const target =
     mobileNav.value?.querySelector<HTMLElement>('[aria-current="page"]') ??
     mobileNav.value?.querySelector<HTMLElement>('a')
   target?.focus()
+}
+
+// Only a real page change moves focus; query-only updates keep the current element.
+let focusedPath = route.path
+function onPageEntered() {
+  if (focusedPath === route.path) return
+  focusedPath = route.path
+  mainArea.value?.querySelector<HTMLElement>('h1[tabindex="-1"]')?.focus({ preventScroll: true })
 }
 
 async function logout() {
@@ -68,11 +96,11 @@ async function logout() {
     try {
       await auth.logout()
     } catch {
-      if (auth.sessionVersion === version + 1 && !auth.user)
-        ElMessage.error('退出请求失败，本地登录状态已清除')
-    } finally {
-      if (auth.sessionVersion === version + 1 && !auth.user) await router.replace('/login')
+      // A failed logout keeps the server session, so the user stays signed in.
+      if (auth.sessionVersion === version) ElMessage.error('退出失败，请重试')
+      return
     }
+    if (auth.sessionVersion === version + 1 && !auth.user) await router.replace('/login')
   } finally {
     loggingOut.value = false
   }
@@ -123,7 +151,7 @@ async function logout() {
       direction="ltr"
       size="min(280px, 100vw)"
       @opened="focusMobileNavigation"
-      @closed="mobileMenuButton?.focus()"
+      @closed="onMobileNavClosed"
     >
       <nav id="mobile-navigation" ref="mobileNav" aria-label="移动端主导航" class="mobile-nav">
         <router-link
@@ -145,7 +173,7 @@ async function logout() {
           ref="mobileMenuButton"
           class="mobile-menu-button"
           aria-label="打开导航"
-          aria-controls="mobile-navigation"
+          :aria-controls="mobileNavRendered ? 'mobile-navigation' : undefined"
           :aria-expanded="ui.mobileMenuOpen"
           @click="ui.mobileMenuOpen = true"
         >
@@ -153,12 +181,25 @@ async function logout() {
         </button>
         <div class="topbar-title">{{ route.meta.title || 'SubLedger' }}</div>
         <div class="topbar-user">
-          <span>{{ auth.user?.username }}</span
-          ><el-button text @click="router.push('/settings/profile')">个人设置</el-button
-          ><el-button text :loading="loggingOut" @click="logout">退出</el-button>
+          <button
+            type="button"
+            class="user-button"
+            :aria-label="`${auth.user?.username ?? ''} 的个人设置`"
+            @click="router.push('/settings/profile')"
+          >
+            <span class="user-avatar" aria-hidden="true">{{ userInitial }}</span>
+            <span class="user-name">{{ auth.user?.username }}</span>
+          </button>
+          <el-button text :loading="loggingOut" @click="logout">退出</el-button>
         </div>
       </header>
-      <main><router-view /></main>
+      <main ref="mainArea">
+        <router-view v-slot="{ Component }">
+          <Transition name="page" mode="out-in" @after-enter="onPageEntered">
+            <component :is="Component" :key="route.path" />
+          </Transition>
+        </router-view>
+      </main>
     </section>
   </div>
 </template>
@@ -172,14 +213,26 @@ async function logout() {
   width: 220px;
   flex-shrink: 0;
   background: var(--sl-sidebar);
-  color: #dbe5ef;
+  color: var(--sl-sidebar-text);
   padding: var(--sl-space-5) var(--sl-space-3);
   display: flex;
   flex-direction: column;
-  transition: width 0.2s;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  align-self: flex-start;
+  transition: width var(--sl-duration-base) var(--sl-ease);
 }
 .sidebar.collapsed {
   width: 72px;
+}
+.sidebar nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.sidebar.collapsed nav {
+  overflow: visible;
 }
 .brand {
   font-size: 20px;
@@ -205,20 +258,35 @@ async function logout() {
   padding: var(--sl-space-3);
   border-radius: var(--sl-radius);
   margin-bottom: var(--sl-space-1);
-  color: #c8d3df;
+  color: var(--sl-sidebar-text);
+  transition:
+    background var(--sl-duration-fast) var(--sl-ease),
+    color var(--sl-duration-fast) var(--sl-ease);
+}
+.nav-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--sl-sidebar-indicator);
+  transform: scaleY(0);
+  transition: transform 160ms var(--sl-ease-out);
+}
+.nav-item.active::before {
+  transform: scaleY(1);
 }
 .nav-item:hover,
 .nav-item:focus-visible,
 .nav-item.active {
-  background: #2d4b69;
+  background: var(--sl-sidebar-active);
   color: white;
-}
-.nav-item.active {
-  box-shadow: inset 3px 0 0 #93c5fd;
 }
 .sidebar .nav-item:focus-visible,
 .collapse-button:focus-visible {
-  outline-color: #93c5fd;
+  outline-color: var(--sl-sidebar-indicator);
 }
 .nav-label {
   min-width: 0;
@@ -234,25 +302,26 @@ async function logout() {
   top: 50%;
   transform: translateY(-50%);
   padding: var(--sl-space-2) var(--sl-space-3);
-  border-radius: var(--sl-radius);
-  background: var(--sl-sidebar);
+  border-radius: var(--sl-radius-sm);
+  background: #16202e;
   color: white;
   white-space: nowrap;
   visibility: hidden;
   pointer-events: none;
   z-index: 10;
-  box-shadow: 0 4px 12px #18223026;
+  box-shadow: var(--sl-shadow-2);
 }
 .nav-item:hover .nav-tooltip,
 .nav-item:focus-visible .nav-tooltip {
   visibility: visible;
 }
 .collapse-button {
-  margin-top: auto;
+  flex-shrink: 0;
+  margin-top: var(--sl-space-3);
   color: white;
   background: transparent;
   border: 1px solid #52677d;
-  border-radius: 4px;
+  border-radius: var(--sl-radius-sm);
   min-height: 40px;
   display: flex;
   align-items: center;
@@ -268,6 +337,9 @@ async function logout() {
   min-width: 0;
 }
 .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   min-height: 64px;
   background: var(--sl-surface);
   border-bottom: 1px solid var(--sl-border);
@@ -288,7 +360,35 @@ async function logout() {
   gap: var(--sl-space-3);
   min-width: 0;
 }
-.topbar-user > span {
+.user-button {
+  display: flex;
+  align-items: center;
+  gap: var(--sl-space-2);
+  min-width: 0;
+  padding: 4px var(--sl-space-2) 4px 4px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--sl-text);
+  cursor: pointer;
+  transition: background var(--sl-duration-fast) var(--sl-ease);
+}
+.user-button:hover {
+  background: var(--sl-surface-muted);
+}
+.user-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--sl-primary-soft);
+  color: var(--sl-primary-text);
+  font-weight: 600;
+}
+.user-name {
   max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -306,21 +406,21 @@ async function logout() {
   width: 40px;
   height: 40px;
   padding: 10px;
-  border-radius: var(--sl-radius);
+  border-radius: var(--sl-radius-sm);
   color: var(--sl-text);
   cursor: pointer;
 }
 .mobile-nav .nav-item {
   color: var(--sl-text);
 }
+.mobile-nav .nav-item::before {
+  background: var(--sl-primary);
+}
 .mobile-nav .nav-item:hover,
 .mobile-nav .nav-item:focus-visible,
 .mobile-nav .nav-item.active {
-  background: var(--el-color-primary-light-9);
+  background: var(--sl-primary-soft);
   color: var(--sl-primary);
-}
-.mobile-nav .nav-item.active {
-  box-shadow: inset 3px 0 0 var(--sl-primary);
 }
 @media (max-width: 700px) {
   .sidebar {
@@ -338,8 +438,11 @@ async function logout() {
   .topbar-user {
     gap: 4px;
   }
-  .topbar-user span {
+  .user-name {
     display: none;
+  }
+  .user-button {
+    padding: 0;
   }
   .topbar-user :deep(.el-button) {
     padding-inline: var(--sl-space-2);

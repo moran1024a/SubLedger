@@ -42,7 +42,11 @@ import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { useViewScope } from '@/composables/useViewScope'
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/format'
+import { currencies, timezones } from '@/utils/profileOptions'
+import { isValidCurrencyCode } from '@/utils/validation'
 import OperationFeedback from '@/components/common/OperationFeedback.vue'
+import LoadingBlock from '@/components/common/LoadingBlock.vue'
+import RecordCard from '@/components/common/RecordCard.vue'
 
 const users = ref<CurrentUser[]>([])
 const page = ref(1)
@@ -60,7 +64,15 @@ const createSaving = ref(false)
 const resetSaving = ref(false)
 const actionId = ref<number | null>(null)
 const selected = ref<CurrentUser | null>(null)
-const createForm = ref({ username: '', password: '', confirm: '' })
+const auth = useAuthStore()
+const emptyCreateForm = () => ({
+  username: '',
+  password: '',
+  confirm: '',
+  timezone: auth.user?.timezone || 'UTC',
+  currency_code: auth.user?.currency_code || 'CNY',
+})
+const createForm = ref(emptyCreateForm())
 const createFieldErrors = ref<Record<string, string>>({})
 const resetForm = ref({ password: '', confirm: '' })
 const closing = ref(false)
@@ -68,11 +80,12 @@ const busy = computed(
   () => createSaving.value || resetSaving.value || actionId.value !== null || closing.value,
 )
 const { dirty, confirmDiscard } = useUnsavedChanges()
-const auth = useAuthStore()
 const identity = computed(() => `${auth.sessionVersion}:${auth.user?.id ?? ''}`)
 const scope = useViewScope(() => identity.value)
 const vLoading = ElLoading.directive
 const operationMessage = ref('')
+const createMessage = ref('')
+const resetMessage = ref('')
 const createUncertain = ref(false)
 const resetUncertain = reactive(new Set<number>())
 const statusUncertain = reactive(new Set<number>())
@@ -82,11 +95,14 @@ const hasUncertain = computed(
 watch(
   [createForm, resetForm, createVisible, resetVisible],
   () => {
+    const defaultCreateForm = emptyCreateForm()
     dirty.value =
       (createVisible.value &&
-        Boolean(
+        (Boolean(
           createForm.value.username || createForm.value.password || createForm.value.confirm,
-        )) ||
+        ) ||
+          createForm.value.timezone !== defaultCreateForm.timezone ||
+          createForm.value.currency_code !== defaultCreateForm.currency_code)) ||
       (resetVisible.value && Boolean(resetForm.value.password || resetForm.value.confirm))
   },
   { deep: true, flush: 'sync' },
@@ -142,11 +158,13 @@ async function closeDialog(kind: 'create' | 'reset', done?: () => void) {
     if (!current()) return
     if (kind === 'create') {
       createVisible.value = false
-      createForm.value = { username: '', password: '', confirm: '' }
+      createForm.value = emptyCreateForm()
       createFieldErrors.value = {}
+      createMessage.value = ''
     } else {
       resetVisible.value = false
       resetForm.value = { password: '', confirm: '' }
+      resetMessage.value = ''
       selected.value = null
     }
     done?.()
@@ -163,8 +181,9 @@ async function openCreate() {
     await closeReset()
     if (!current() || resetVisible.value) return
   }
-  createForm.value = { username: '', password: '', confirm: '' }
+  createForm.value = emptyCreateForm()
   createFieldErrors.value = {}
+  createMessage.value = ''
   createVisible.value = true
 }
 async function confirmRetry(message: string) {
@@ -173,6 +192,11 @@ async function confirmRetry(message: string) {
     confirmButtonText: '继续提交',
     cancelButtonText: '取消',
   })
+}
+function setCreateCurrency(value: unknown) {
+  createForm.value.currency_code = String(value ?? '')
+    .trim()
+    .toUpperCase()
 }
 async function submitCreate() {
   if (busy.value) return
@@ -184,12 +208,18 @@ async function submitCreate() {
     ElMessage.error('请填写有效用户名，并确认至少 8 位且一致的密码')
     return
   }
+  if (!isValidCurrencyCode(createForm.value.currency_code)) {
+    createFieldErrors.value = { currency_code: '货币代码需为 3 到 8 位大写字母' }
+    return
+  }
   createSaving.value = true
   createFieldErrors.value = {}
   const current = scope.capture()
   const submitted = {
     username: createForm.value.username.trim(),
     password: createForm.value.password,
+    timezone: createForm.value.timezone,
+    currency_code: createForm.value.currency_code,
   }
   try {
     if (createUncertain.value)
@@ -200,18 +230,18 @@ async function submitCreate() {
     await createUser(submitted)
     if (!current()) return
     createVisible.value = false
-    createForm.value = { username: '', password: '', confirm: '' }
+    createForm.value = emptyCreateForm()
     createUncertain.value = false
-    operationMessage.value = ''
+    createMessage.value = ''
     ElMessage.success('普通用户已创建')
     await load()
   } catch (cause) {
     if (!current() || cause === 'cancel' || cause === 'close') return
     createFieldErrors.value = getFieldErrors(cause)
     createUncertain.value = isUncertainWrite(cause)
-    operationMessage.value = writeErrorMessage(cause)
+    createMessage.value = writeErrorMessage(cause)
     if (createUncertain.value)
-      operationMessage.value += '请查询用户名核实是否已创建；已存在的账户可重置密码。'
+      createMessage.value += '请查询用户名核实是否已创建；已存在的账户可重置密码。'
   } finally {
     if (current()) createSaving.value = false
   }
@@ -229,6 +259,7 @@ async function openReset(user: CurrentUser) {
   }
   selected.value = user
   resetForm.value = { password: '', confirm: '' }
+  resetMessage.value = ''
   resetVisible.value = true
 }
 async function submitReset() {
@@ -258,14 +289,14 @@ async function submitReset() {
     resetVisible.value = false
     resetForm.value = { password: '', confirm: '' }
     resetUncertain.delete(targetId)
-    operationMessage.value = ''
+    resetMessage.value = ''
     ElMessage.success('密码已重置')
   } catch (cause) {
     if (!current() || cause === 'cancel' || cause === 'close') return
     if (isUncertainWrite(cause)) resetUncertain.add(targetId)
-    operationMessage.value = writeErrorMessage(cause)
+    resetMessage.value = writeErrorMessage(cause)
     if (resetUncertain.has(targetId))
-      operationMessage.value += '请让用户尝试新密码；核实后再次重置会要求确认。'
+      resetMessage.value += '请让用户尝试新密码；核实后再次重置会要求确认。'
   } finally {
     if (current()) resetSaving.value = false
   }
@@ -284,6 +315,12 @@ async function toggle(user: CurrentUser) {
         '该用户将无法继续登录，当前会话会失效，数据会保留，账单和提醒会停止，停用期间的历史不会补处理。',
         '确认停用用户',
         { type: 'warning', confirmButtonText: '停用', cancelButtonText: '取消' },
+      )
+    else
+      await ElMessageBox.confirm(
+        '启用后会补齐该用户的账单并恢复提醒。确定启用吗？',
+        '确认启用用户',
+        { type: 'warning', confirmButtonText: '启用', cancelButtonText: '取消' },
       )
     if (!current()) return
     if (wasActive) await disableUser(user.id)
@@ -319,7 +356,7 @@ watch([identity, () => auth.loading], ([session, authLoading], previous) => {
     loading.value = false
     createVisible.value = false
     resetVisible.value = false
-    createForm.value = { username: '', password: '', confirm: '' }
+    createForm.value = emptyCreateForm()
     resetForm.value = { password: '', confirm: '' }
     selected.value = null
     createSaving.value = false
@@ -331,6 +368,8 @@ watch([identity, () => auth.loading], ([session, authLoading], previous) => {
     resetUncertain.clear()
     statusUncertain.clear()
     operationMessage.value = ''
+    createMessage.value = ''
+    resetMessage.value = ''
   }
   if (!authLoading && auth.isAdmin) void load()
 })
@@ -385,22 +424,22 @@ onMounted(load)
         class="desktop-users"
         :data="users"
         stripe
-        ><el-table-column prop="id" label="ID" width="80" /><el-table-column
+        ><el-table-column prop="id" label="ID" width="64" /><el-table-column
           prop="username"
           label="用户名"
-          min-width="150"
-        /><el-table-column label="角色" width="110"
+          min-width="140"
+        /><el-table-column label="角色" width="96"
           ><template #default="{ row }">{{
             row.role === 'admin' ? '管理员' : '普通用户'
           }}</template></el-table-column
-        ><el-table-column label="状态" width="100"
+        ><el-table-column label="状态" width="84"
           ><template #default="{ row }"
             ><StatusTag :active="row.is_active" /></template></el-table-column
-        ><el-table-column label="创建时间" width="180"
+        ><el-table-column label="创建时间" min-width="160"
           ><template #default="{ row }">{{ dateText(row.created_at) }}</template></el-table-column
-        ><el-table-column label="更新时间" width="180"
+        ><el-table-column label="更新时间" min-width="160"
           ><template #default="{ row }">{{ dateText(row.updated_at) }}</template></el-table-column
-        ><el-table-column label="操作" fixed="right" width="250"
+        ><el-table-column label="操作" fixed="right" width="200"
           ><template #default="{ row }"
             ><el-button link type="primary" @click="$router.push(`/admin/users/${row.id}`)"
               >查看</el-button
@@ -419,32 +458,39 @@ onMounted(load)
           ></el-table-column
         ></el-table
       >
-      <div v-if="!error && users.length" class="mobile-users" v-loading="loading">
-        <article v-for="item in users" :key="item.id">
-          <div class="user-heading">
-            <strong>{{ item.username }}</strong
-            ><StatusTag :active="item.is_active" />
-          </div>
-          <p>ID {{ item.id }} · {{ item.role === 'admin' ? '管理员' : '普通用户' }}</p>
-          <p>创建：{{ dateText(item.created_at) }}</p>
-          <p>更新：{{ dateText(item.updated_at) }}</p>
-          <div class="user-actions">
-            <el-button link type="primary" @click="$router.push(`/admin/users/${item.id}`)"
-              >查看</el-button
-            >
-            <template v-if="item.id !== 0"
-              ><el-button link :disabled="busy" @click="openReset(item)">重置密码</el-button
+      <LoadingBlock
+        v-if="!error && loading && !users.length"
+        class="mobile-users-loading"
+        variant="table"
+      />
+      <div v-if="!error && users.length" class="mobile-users sl-stagger" v-loading="loading">
+        <RecordCard
+          v-for="(item, index) in users"
+          :key="item.id"
+          :style="{ '--i': Math.min(index, 8) }"
+        >
+          <template #title>{{ item.username }}</template>
+          <template #amount><StatusTag :active="item.is_active" /></template>
+          <template #meta
+            ><p>ID {{ item.id }} · {{ item.role === 'admin' ? '管理员' : '普通用户' }}</p>
+            <p>创建：{{ dateText(item.created_at) }}</p>
+            <p>更新：{{ dateText(item.updated_at) }}</p></template
+          >
+          <template #actions
+            ><el-button @click="$router.push(`/admin/users/${item.id}`)">查看</el-button
+            ><template v-if="item.id !== 0"
+              ><el-button :disabled="busy" @click="openReset(item)">重置密码</el-button
               ><el-button
-                link
                 :type="item.is_active ? 'danger' : 'success'"
+                plain
                 :loading="actionId === item.id"
                 :disabled="busy"
                 @click="toggle(item)"
                 >{{ item.is_active ? '停用' : '启用' }}</el-button
               ></template
-            >
-          </div>
-        </article>
+            ></template
+          >
+        </RecordCard>
       </div>
       <el-pagination
         v-model:current-page="page"
@@ -469,12 +515,31 @@ onMounted(load)
         ><el-form-item label="初始密码" :error="createFieldErrors.password"
           ><el-input v-model="createForm.password" type="password" show-password /></el-form-item
         ><el-form-item label="确认密码"
-          ><el-input
-            v-model="createForm.confirm"
-            type="password"
-            show-password /></el-form-item></el-form
+          ><el-input v-model="createForm.confirm" type="password" show-password /></el-form-item
+        ><el-form-item label="时区" :error="createFieldErrors.timezone"
+          ><el-select v-model="createForm.timezone" filterable style="width: 100%"
+            ><el-option
+              v-for="timezone in timezones"
+              :key="timezone"
+              :label="timezone"
+              :value="timezone" /></el-select></el-form-item
+        ><el-form-item label="货币" :error="createFieldErrors.currency_code"
+          ><el-select
+            :model-value="createForm.currency_code"
+            filterable
+            allow-create
+            default-first-option
+            style="width: 100%"
+            @update:model-value="setCreateCurrency"
+            ><el-option
+              v-for="currency in currencies"
+              :key="currency"
+              :label="currency"
+              :value="currency" /></el-select
+          ><span class="field-help">可直接输入其他 3 到 8 位代码</span></el-form-item
+        ></el-form
       ><template #footer
-        ><p v-if="operationMessage" class="hint" role="status">{{ operationMessage }}</p>
+        ><p v-if="createMessage" class="hint" role="status">{{ createMessage }}</p>
         <div class="form-actions">
           <el-button :disabled="busy" @click="closeCreate()">取消</el-button
           ><el-button type="primary" :loading="createSaving" :disabled="busy" @click="submitCreate"
@@ -499,7 +564,7 @@ onMounted(load)
             type="password"
             show-password /></el-form-item></el-form
       ><template #footer
-        ><p v-if="operationMessage" class="hint" role="status">{{ operationMessage }}</p>
+        ><p v-if="resetMessage" class="hint" role="status">{{ resetMessage }}</p>
         <div class="form-actions">
           <el-button :disabled="busy" @click="closeReset()">取消</el-button
           ><el-button type="primary" :loading="resetSaving" :disabled="busy" @click="submitReset"
@@ -512,28 +577,29 @@ onMounted(load)
 </template>
 
 <style scoped>
-.hint,
-.mobile-users p {
+.hint {
+  margin: 0 0 var(--sl-space-3);
   color: var(--sl-text-muted);
   font-size: 13px;
 }
-.mobile-users {
+.field-help {
+  display: block;
+  width: 100%;
+  margin-top: var(--sl-space-1);
+  color: var(--sl-text-muted);
+  font-size: var(--sl-font-size-xs);
+  line-height: 1.5;
+}
+.mobile-users p {
+  margin: 0;
+}
+.mobile-users,
+.mobile-users-loading {
   display: none;
 }
-.mobile-users article {
-  padding: var(--sl-space-4, 16px) 0;
-  border-bottom: 1px solid var(--sl-border);
-  overflow-wrap: anywhere;
-}
-.user-heading,
-.user-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--sl-space-3, 12px);
-}
-.user-heading {
-  justify-content: space-between;
+.mobile-users {
+  flex-direction: column;
+  gap: var(--sl-space-3);
 }
 .el-pagination {
   margin-top: var(--sl-space-4, 16px);
@@ -544,6 +610,9 @@ onMounted(load)
     display: none;
   }
   .mobile-users {
+    display: flex;
+  }
+  .mobile-users-loading {
     display: block;
   }
 }

@@ -93,7 +93,7 @@ describe('auth store', () => {
     expect(auth.initialized).toBe(true)
   })
 
-  it('clears local state even when logout fails for another reason', async () => {
+  it('keeps the session when logout fails for another reason', async () => {
     vi.mocked(authApi.logout).mockRejectedValue(new Error('offline'))
     const auth = useAuthStore()
     auth.setUser({
@@ -106,8 +106,10 @@ describe('auth store', () => {
       created_at: '',
       updated_at: '',
     })
+    const version = auth.sessionVersion
 
     await expect(auth.logout()).rejects.toThrow('offline')
-    expect(auth.user).toBeNull()
+    expect(auth.user?.username).toBe('user')
+    expect(auth.sessionVersion).toBe(version)
   })
 })

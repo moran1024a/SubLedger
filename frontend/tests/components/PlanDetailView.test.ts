@@ -2,9 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import PlanDetailView from '@/views/plans/PlanDetailView.vue'
-import { deletePlan, getPlan } from '@/api/plans'
+import { deletePlan, disablePlan, enablePlan, getPlan, updatePlan } from '@/api/plans'
 import { ElMessageBox } from 'element-plus'
-import { ApiError, type BillPlan } from '@/types/api'
+import { ApiError, type BillPlan, type BillPlanPayload } from '@/types/api'
 
 const replace = vi.fn()
 
@@ -83,5 +83,58 @@ describe('PlanDetailView', () => {
     await (wrapper.vm as unknown as { remove: () => Promise<void> }).remove()
 
     expect(replace).toHaveBeenCalledWith('/plans')
+  })
+
+  it('warns that a schedule change rebuilds reminders that may be sent again', async () => {
+    vi.mocked(updatePlan).mockResolvedValue({ ...plan, first_due_date: '2026-08-01' })
+    const wrapper = mountView()
+    await flushPromises()
+    const payload: BillPlanPayload = {
+      name: plan.name,
+      amount: plan.amount,
+      first_due_date: '2026-08-01',
+      cycle_type: 'month',
+      cycle_interval: 1,
+      cycle_days: null,
+      note: null,
+    }
+    await (wrapper.vm as unknown as { save: (value: BillPlanPayload) => Promise<void> }).save(
+      payload,
+    )
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('今日及未来的提醒记录会重建，已发送的当天提醒可能再次发送。'),
+      '确认保存账单规则',
+      expect.any(Object),
+    )
+    expect(updatePlan).toHaveBeenCalledWith(2, payload)
+  })
+
+  it('explains that disabling reduces today, month and year totals', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await (wrapper.vm as unknown as { toggle: () => Promise<void> }).toggle()
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('今日、本月、全年合计会同步减少'),
+      '确认停用',
+      expect.any(Object),
+    )
+    expect(disablePlan).toHaveBeenCalledWith(2)
+  })
+
+  it('confirms enabling and explains manually invalidated bills stay invalid', async () => {
+    vi.mocked(getPlan).mockResolvedValue({ ...plan, is_enabled: false })
+    const wrapper = mountView()
+    await flushPromises()
+    vi.mocked(ElMessageBox.confirm).mockRejectedValueOnce('cancel')
+    const vm = wrapper.vm as unknown as { toggle: () => Promise<void> }
+    await vm.toggle()
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('手动标记无效的账单不会恢复。'),
+      '确认启用',
+      expect.any(Object),
+    )
+    expect(enablePlan).not.toHaveBeenCalled()
+    await vm.toggle()
+    expect(enablePlan).toHaveBeenCalledWith(2)
   })
 })

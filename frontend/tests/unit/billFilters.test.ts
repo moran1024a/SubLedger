@@ -24,6 +24,28 @@ describe('bill query helpers', () => {
       readBillQuery({ is_valid: 'false', q: ' cloud ', page: '2', page_size: '50' }),
     ).toMatchObject({ is_valid: 'false', q: 'cloud', page: 2, page_size: 50 })
   })
+  it('drops an inverted date range and keeps single-sided dates', () => {
+    expect(readBillQuery({ start_date: '2026-10-02', end_date: '2026-10-01' })).toMatchObject({
+      start_date: '',
+      end_date: '',
+    })
+    expect(readBillQuery({ start_date: '2026-10-01', end_date: '2026-10-01' })).toMatchObject({
+      start_date: '2026-10-01',
+      end_date: '2026-10-01',
+    })
+    expect(readBillQuery({ start_date: '2026-10-01' })).toMatchObject({
+      start_date: '2026-10-01',
+      end_date: '',
+    })
+    expect(readBillQuery({ end_date: '2026-10-31' })).toMatchObject({
+      start_date: '',
+      end_date: '2026-10-31',
+    })
+    expect(readBillQuery({ start_date: '2026-10-02', end_date: '2026-02-30' })).toMatchObject({
+      start_date: '2026-10-02',
+      end_date: '',
+    })
+  })
   it('validates calendar dates including leap years', () => {
     expect(validDate('2024-02-29')).toBe(true)
     expect(validDate('2026-02-29')).toBe(false)

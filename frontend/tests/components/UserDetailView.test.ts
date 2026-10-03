@@ -6,6 +6,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import UserDetailView from '@/views/admin/UserDetailView.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
 import { disableUser, enableUser, getUser, resetUserPassword, updateUser } from '@/api/users'
 import type { CurrentUser } from '@/types/api'
 
@@ -289,4 +290,52 @@ it('shows current server profile values for an uncertain write while retaining b
   expect(view.uncertain.profile).toBe(true)
   expect(view.dirty).toBe(true)
   expect(ElMessage.success).not.toHaveBeenCalled()
+})
+
+describe('user detail edge routes', () => {
+  async function remount(path: string) {
+    root.unmount()
+    await router.push(path)
+    vi.mocked(getUser).mockClear()
+    const wrapper = mount(
+      { template: '<router-view />' },
+      {
+        global: {
+          plugins: [router],
+          stubs: {
+            'el-card': { template: '<section><slot /></section>' },
+            'el-form': { template: '<form><slot /></form>' },
+            'el-form-item': { template: '<div><slot /></div>' },
+          },
+        },
+      },
+    )
+    await flushPromises()
+    return wrapper
+  }
+
+  it('shows an empty state with a way back for an invalid id', async () => {
+    const wrapper = await remount('/admin/users/abc')
+    expect(getUser).not.toHaveBeenCalled()
+    expect(wrapper.findComponent(EmptyState).props('title')).toBe('用户不存在或链接无效')
+  })
+
+  it('locks timezone and currency for the administrator and links to its logs', async () => {
+    vi.mocked(getUser).mockImplementation(async (id) => ({
+      ...user,
+      id,
+      role: 'admin',
+      username: 'admin',
+    }))
+    const wrapper = await remount('/admin/users/0')
+    const selects = wrapper.findAll('el-select-stub')
+    expect(selects).toHaveLength(2)
+    selects.forEach((select) => expect(select.attributes('disabled')).toBe('true'))
+    expect(wrapper.text()).toContain('管理员资料请在个人设置修改')
+    const actions = wrapper.findAllComponents({ name: 'ElButton' })
+    const logs = actions.find((button) => button.text() === '查看日志') ?? actions[1]!
+    const push = vi.spyOn(router, 'push').mockResolvedValue(undefined)
+    logs.vm.$emit('click')
+    expect(push).toHaveBeenCalledWith({ path: '/admin/logs/users', query: { user_id: '0' } })
+  })
 })

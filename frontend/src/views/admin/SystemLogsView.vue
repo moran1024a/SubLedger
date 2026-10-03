@@ -8,6 +8,8 @@ import { downloadSystemLog, getSystemLogs } from '@/api/logs'
 import { useLogFiles } from '@/composables/useLogFiles'
 import PageHeader from '@/components/common/PageHeader.vue'
 import LogFileTable from '@/components/logs/LogFileTable.vue'
+import { useAuthStore } from '@/stores/auth'
+const auth = useAuthStore()
 import EmptyState from '@/components/common/EmptyState.vue'
 import LoadingBlock from '@/components/common/LoadingBlock.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
@@ -21,6 +23,8 @@ onMounted(load)
   <div class="page-container">
     <PageHeader title="系统日志" description="查看系统日志文件和最近修改时间"
       ><template #actions
+        ><el-button :loading="loading" :disabled="downloading !== null" @click="load"
+          >刷新</el-button
         ><el-button
           type="primary"
           :disabled="loading || error !== null || !files.length || downloading !== null"
@@ -43,7 +47,11 @@ onMounted(load)
         ><span
           >日志文件 <span class="text-muted tabular-nums">（{{ files.length }}）</span></span
         ></template
-      ><LogFileTable :files="files" :downloading="downloading" @download="downloadFile"
+      ><LogFileTable
+        :files="files"
+        :downloading="downloading"
+        :timezone="auth.user?.timezone"
+        @download="downloadFile"
     /></el-card>
   </div>
 </template>

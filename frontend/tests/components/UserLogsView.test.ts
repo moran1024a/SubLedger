@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import UserLogsView from '@/views/admin/UserLogsView.vue'
 import { downloadUserLog, getUserLogs, saveBlob } from '@/api/logs'
@@ -69,7 +70,11 @@ function mountView() {
   })
 }
 
+const downloadAllButton = (wrapper: ReturnType<typeof mountView>) =>
+  wrapper.findAll('button').find((button) => button.text() === '下载全部')!
+
 beforeEach(() => {
+  setActivePinia(createPinia())
   vi.clearAllMocks()
   route.query = {}
   vi.mocked(listUsers).mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
@@ -207,7 +212,7 @@ describe('UserLogsView', () => {
     vi.mocked(getUserLogs).mockResolvedValueOnce([file])
     vm.selectedId = 1
     await flushPromises()
-    expect(wrapper.find('button').element.disabled).toBe(false)
+    expect(downloadAllButton(wrapper).element.disabled).toBe(false)
 
     const pending = deferred()
     vi.mocked(getUserLogs).mockReturnValueOnce(pending.promise)
@@ -218,11 +223,11 @@ describe('UserLogsView', () => {
     await vm.downloadFile(file.filename)
     expect(downloadUserLog).not.toHaveBeenCalled()
     await flushPromises()
-    expect(wrapper.find('button').element.disabled).toBe(true)
+    expect(downloadAllButton(wrapper).element.disabled).toBe(true)
 
     pending.resolve([{ ...file, filename: 'new-user.log' }])
     await flushPromises()
-    expect(wrapper.find('button').element.disabled).toBe(false)
+    expect(downloadAllButton(wrapper).element.disabled).toBe(false)
     await vm.downloadFile('new-user.log')
     expect(downloadUserLog).toHaveBeenCalledWith(2, 'new-user.log', expect.any(AbortSignal))
     expect(saveBlob).toHaveBeenCalledOnce()
@@ -239,7 +244,7 @@ describe('UserLogsView', () => {
 
     expect(vm.error).toBe(failure)
     expect(vm.loading).toBe(false)
-    expect(wrapper.find('button').element.disabled).toBe(true)
+    expect(downloadAllButton(wrapper).element.disabled).toBe(true)
     await vm.downloadFile()
     expect(downloadUserLog).not.toHaveBeenCalled()
   })
@@ -262,4 +267,67 @@ it('loads a linked user outside the initial search page', async () => {
   expect(getUser).toHaveBeenCalledWith(201, expect.any(AbortSignal))
   expect((wrapper.vm as unknown as UserLogsVm).selectedId).toBe(201)
   expect(getUserLogs).toHaveBeenCalledWith(201, expect.any(AbortSignal))
+})
+
+const admin = {
+  id: 0,
+  username: 'admin',
+  role: 'admin' as const,
+  is_active: true,
+  timezone: 'UTC',
+  currency_code: 'CNY',
+  created_at: '',
+  updated_at: '',
+}
+const member = { ...admin, id: 1, username: 'member', role: 'user' as const }
+
+it('offers the administrator as its own option and loads its logs from the URL', async () => {
+  route.query = { user_id: '0' }
+  vi.mocked(listUsers).mockResolvedValue({
+    items: [admin, member],
+    total: 2,
+    page: 1,
+    page_size: 100,
+  })
+  const wrapper = mountView()
+  await flushPromises()
+  expect(wrapper.findAll('option').map((option) => option.text())).toEqual([
+    '管理员（自己）',
+    'member',
+  ])
+  expect((wrapper.vm as unknown as UserLogsVm).selectedId).toBe(0)
+  expect(getUserLogs).toHaveBeenCalledWith(0, expect.any(AbortSignal))
+  expect(getUser).not.toHaveBeenCalled()
+})
+
+it('keeps the card title when a remote search no longer contains the selected user', async () => {
+  vi.mocked(listUsers).mockResolvedValueOnce({ items: [member], total: 1, page: 1, page_size: 100 })
+  vi.mocked(getUserLogs).mockResolvedValue([file])
+  const wrapper = mountView()
+  await flushPromises()
+  const vm = wrapper.vm as unknown as UserLogsVm & { loadUsers: (q?: string) => Promise<void> }
+  vm.selectedId = 1
+  await flushPromises()
+  expect(wrapper.text()).toContain('member的日志')
+  vi.mocked(listUsers).mockResolvedValueOnce({ items: [], total: 0, page: 1, page_size: 100 })
+  await vm.loadUsers('nobody')
+  await flushPromises()
+  expect(wrapper.text()).toContain('member的日志')
+})
+
+it('refreshes the selected user logs from the header', async () => {
+  const wrapper = mountView()
+  await flushPromises()
+  const vm = wrapper.vm as unknown as UserLogsVm
+  vm.selectedId = 1
+  await flushPromises()
+  expect(getUserLogs).toHaveBeenCalledTimes(1)
+  await wrapper
+    .findAll('button')
+    .find((button) => button.text() === '刷新')!
+    .trigger('click')
+  await flushPromises()
+  // The shared button stub forwards both the native and the emitted click.
+  expect(vi.mocked(getUserLogs).mock.calls.length).toBeGreaterThan(1)
+  expect(getUserLogs).toHaveBeenLastCalledWith(1, expect.any(AbortSignal))
 })

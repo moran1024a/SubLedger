@@ -1,4 +1,4 @@
-import { flushPromises, shallowMount } from '@vue/test-utils'
+import { flushPromises, mount, shallowMount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -6,7 +6,7 @@ import BillDetailDrawer from '@/components/billing/BillDetailDrawer.vue'
 import HomeView from '@/views/HomeView.vue'
 import { getBill, listBills, updateBillValidity } from '@/api/bills'
 import { getSummary } from '@/api/statistics'
-import { ApiError, type BillOccurrence } from '@/types/api'
+import { ApiError, type BillOccurrence, type StatisticsResponse } from '@/types/api'
 
 vi.mock('@/api/bills', () => ({
   getBill: vi.fn(),
@@ -116,4 +116,85 @@ it('shows real upcoming bills independently when dashboard statistics fail', asy
     { time_status: 'upcoming', is_valid: true, sort: 'asc', page_size: 10 },
     expect.any(AbortSignal),
   )
+})
+
+describe('home next bill card', () => {
+  const summary = (next: StatisticsResponse['next_bill']): StatisticsResponse => ({
+    date: '2026-07-20',
+    today: { count: 1, amount: '12.50' },
+    current_month: { count: 3, amount: '59.70' },
+    current_year: { count: 36, amount: '716.40' },
+    averages: { monthly: '42.50', daily: '1.40' },
+    next_bill: next,
+  })
+  async function mountHome(next: StatisticsResponse['next_bill']) {
+    vi.mocked(getSummary).mockResolvedValue(summary(next))
+    vi.mocked(listBills).mockResolvedValue({ items: [bill], total: 1, page: 1, page_size: 10 })
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/', component: { template: '<div />' } }],
+    })
+    await router.push('/')
+    await router.isReady()
+    const wrapper = mount(HomeView, {
+      global: {
+        plugins: [createPinia(), router],
+        stubs: {
+          PageHeader: true,
+          BillDetailDrawer: true,
+          'router-link': { template: '<a><slot /></a>' },
+          'el-card': { template: '<div class="card"><slot name="header" /><slot /></div>' },
+          'el-button': { template: '<button type="button"><slot /></button>' },
+        },
+      },
+    })
+    await flushPromises()
+    return { wrapper, router }
+  }
+
+  it('shows four metrics and opens the next bill in the drawer', async () => {
+    const { wrapper, router } = await mountHome({
+      bill_id: 101,
+      name: '示例订阅',
+      amount: '19.90',
+      due_date: '2026-07-21',
+      days_remaining: 1,
+    })
+    const labels = wrapper.findAll('.metric-label').map((item) => item.text())
+    expect(labels).toEqual(['今日', '本月预计', '全年预计', '下一笔账单'])
+    expect(wrapper.findAll('.metric-number')[0]!.text()).toBe('¥12.50')
+    const next = wrapper.find('.next-bill')
+    expect(next.text()).toContain('示例订阅')
+    expect(next.text()).toContain('¥19.90')
+    expect(next.text()).toContain('2026-07-21 · 还有 1 天')
+    expect(next.attributes('disabled')).toBeUndefined()
+    await next.trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query.bill_id).toBe('101')
+    expect(wrapper.find('.upcoming-row .date-badge').exists()).toBe(true)
+  })
+
+  it('disables opening a next bill that has no generated record', async () => {
+    const { wrapper, router } = await mountHome({
+      bill_id: null,
+      name: '示例订阅',
+      amount: '19.90',
+      due_date: '2026-07-20',
+      days_remaining: 0,
+    })
+    const next = wrapper.find('.next-bill')
+    expect(next.text()).toContain('今天')
+    expect(next.attributes('disabled')).toBeDefined()
+    await next.trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query.bill_id).toBeUndefined()
+  })
+
+  it('offers to create a rule when there is no next bill', async () => {
+    const { wrapper } = await mountHome(null)
+    expect(wrapper.find('.next-bill').exists()).toBe(false)
+    const card = wrapper.find('.next-card')
+    expect(card.text()).toContain('暂无未过账单')
+    expect(card.text()).toContain('新建规则')
+  })
 })

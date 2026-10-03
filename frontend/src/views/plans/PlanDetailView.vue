@@ -3,10 +3,21 @@ import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/card/style/css'
 import 'element-plus/es/components/descriptions/style/css'
 import 'element-plus/es/components/descriptions-item/style/css'
+import 'element-plus/es/components/dropdown/style/css'
+import 'element-plus/es/components/dropdown-item/style/css'
+import 'element-plus/es/components/dropdown-menu/style/css'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/message-box/style/css'
 
-import { ElButton, ElCard, ElDescriptions, ElDescriptionsItem } from 'element-plus'
+import {
+  ElButton,
+  ElCard,
+  ElDescriptions,
+  ElDescriptionsItem,
+  ElDropdown,
+  ElDropdownItem,
+  ElDropdownMenu,
+} from 'element-plus'
 import { useQueryRequest } from '@/composables/useQueryRequest'
 import { watch, ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -113,7 +124,9 @@ async function save(payload: BillPlanPayload) {
       const messages = []
       if (amountChanged) messages.push('历史账单金额保持不变，今日及未来账单使用新金额。')
       if (scheduleChanged)
-        messages.push('未来账单将重新生成，已有无效标记会被清除，历史账单不会删除。')
+        messages.push(
+          '未来账单将重新生成，已有无效标记会被清除，历史账单不会删除。今日及未来的提醒记录会重建，已发送的当天提醒可能再次发送。',
+        )
       await ElMessageBox.confirm(
         `规则「${old.name}」(#${targetId})。${messages.join(' ')}`,
         '确认保存账单规则',
@@ -153,9 +166,15 @@ async function toggle() {
   try {
     if (wasEnabled)
       await ElMessageBox.confirm(
-        `规则「${plan.value.name}」(#${targetId})。停用后不再生成新账单，当前未过账单将失效，不再参与月均和日均统计，也不再发送提醒。历史账单会保留。`,
+        `规则「${plan.value.name}」(#${targetId})。停用后不再生成新账单，当前未过账单将失效，不再参与月均和日均统计，也不再发送提醒；今日、本月、全年合计会同步减少。历史账单会保留。`,
         '确认停用',
         { type: 'warning', confirmButtonText: '停用', cancelButtonText: '取消' },
+      )
+    else
+      await ElMessageBox.confirm(
+        `规则「${plan.value.name}」(#${targetId})。启用后会恢复因停用而失效的今日及未来账单，补齐后续账单并恢复提醒。手动标记无效的账单不会恢复。`,
+        '确认启用',
+        { type: 'info', confirmButtonText: '启用', cancelButtonText: '取消' },
       )
     if (!current() || plan.value?.is_enabled !== wasEnabled) return
     operationMessage.value = ''
@@ -247,7 +266,9 @@ watch(
           >查看关联账单</el-button
         ><el-button
           v-if="plan"
-          :type="plan.is_enabled ? 'danger' : 'success'"
+          class="desktop-action"
+          :type="plan.is_enabled ? undefined : 'success'"
+          :plain="!plan.is_enabled"
           :loading="toggling"
           :disabled="editing || busy || loading"
           @click="toggle"
@@ -260,11 +281,26 @@ watch(
           >编辑</el-button
         ><el-button
           v-if="plan && !editing"
+          class="desktop-action"
           type="danger"
           :loading="deleting"
           :disabled="busy || loading"
           @click="remove"
           >删除</el-button
+        ><el-dropdown
+          v-if="plan && !editing"
+          class="mobile-action"
+          trigger="click"
+          :disabled="busy || loading"
+          ><el-button :loading="toggling || deleting" :disabled="busy || loading">更多</el-button
+          ><template #dropdown
+            ><el-dropdown-menu
+              ><el-dropdown-item @click="toggle">{{
+                plan.is_enabled ? '停用' : '启用'
+              }}</el-dropdown-item
+              ><el-dropdown-item divided @click="remove">删除</el-dropdown-item></el-dropdown-menu
+            ></template
+          ></el-dropdown
         ></template
       ></PageHeader
     ><OperationFeedback
@@ -353,7 +389,21 @@ watch(
 .plan-note {
   white-space: pre-wrap;
 }
-@media (max-width: 640px) {
+.mobile-action {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .desktop-action {
+    display: none;
+  }
+  .mobile-action {
+    display: inline-flex;
+  }
+  .page-container :deep(.page-actions) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .plan-overview {
     flex-direction: column;
     gap: var(--sl-space-4);

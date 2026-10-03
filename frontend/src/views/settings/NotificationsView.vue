@@ -83,7 +83,28 @@ const testing = ref<'email' | 'feishu' | null>(null)
 const loaded = ref<NotificationSettings | null>(null)
 const error = ref<ApiError | null>(null)
 const fieldErrors = ref<Record<string, string>>({})
+// Values at the moment errors were reported; a changed value clears its own error.
+let errorValues: Record<string, unknown> = {}
+watch(
+  fieldErrors,
+  (errors) => {
+    errorValues = Object.fromEntries(
+      Object.keys(errors).map((key) => [key, (form as Record<string, unknown>)[key]]),
+    )
+  },
+  { flush: 'sync' },
+)
 const pageRoot = ref<HTMLElement | null>(null)
+const emailTestButton = ref<InstanceType<typeof ElButton> | null>(null)
+const feishuTestButton = ref<InstanceType<typeof ElButton> | null>(null)
+const channelNames: Record<Channel, string> = { email: '邮件', feishu: '飞书' }
+const iconPaths = {
+  testing: 'M21 12a9 9 0 1 1-6.22-8.56',
+  passed: 'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0M8 12l3 3 5-6',
+  warning:
+    'M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0M12 9v4M12 17h.01',
+  info: 'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0M12 16v-4M12 8h.01',
+}
 async function focusError() {
   await nextTick()
   pageRoot.value?.querySelector<HTMLElement>('.is-error input, .is-error [tabindex="0"]')?.focus()
@@ -135,11 +156,40 @@ function fingerprint(kind: Channel) {
       : [form.feishu_webhook, form.feishu_secret],
   )
 }
+// A disabled channel is saved without its fields, so it never needs a test.
 function needsTest(kind: Channel) {
   return (
-    fingerprint(kind) !== channelBaseline[kind] ||
-    (form[`${kind}_enabled`] && !loaded.value?.[`${kind}_enabled`])
+    form[`${kind}_enabled`] &&
+    (fingerprint(kind) !== channelBaseline[kind] || !loaded.value?.[`${kind}_enabled`])
   )
+}
+function channelFields(kind: Channel, settings: NotificationSettings) {
+  return kind === 'email'
+    ? {
+        smtp_host: settings.smtp_host ?? '',
+        smtp_port: settings.smtp_port ?? 465,
+        smtp_security: settings.smtp_security ?? 'ssl',
+        smtp_username: settings.smtp_username ?? '',
+        smtp_password: '',
+        sender_email: settings.sender_email ?? '',
+        sender_name: settings.sender_name ?? '',
+        recipient_email: settings.recipient_email ?? '',
+      }
+    : { feishu_webhook: '', feishu_secret: '' }
+}
+function revertChannel(kind: Channel) {
+  if (loaded.value) Object.assign(form, channelFields(kind, loaded.value))
+}
+for (const kind of ['email', 'feishu'] as const)
+  watch(
+    () => form[`${kind}_enabled`],
+    (enabled) => {
+      if (!enabled) revertChannel(kind)
+    },
+    { flush: 'sync' },
+  )
+function neverConfigured(kind: Channel) {
+  return kind === 'email' ? !loaded.value?.smtp_host : !loaded.value?.feishu_webhook_configured
 }
 function passed(kind: Channel) {
   return (
@@ -177,24 +227,22 @@ function statusText(kind: Channel) {
     return `测试通过，有效至 ${formatDateTime(new Date(proofs[kind].expires).toISOString(), auth.user?.timezone)}（${auth.user?.timezone || '账户时区'}）；修改配置后需重新测试`
   if (proofs[kind].message) return proofs[kind].message
   if (testUncertain[kind]) return '上次测试发送结果待确认，请先检查是否收到消息；再次测试会要求确认'
+  if (!form[`${kind}_enabled`] && neverConfigured(kind)) return '尚未配置，启用后需测试通过才能保存'
   return needsTest(kind)
     ? '当前配置尚未测试，保存前请先测试'
     : '使用已保存配置；修改配置或重新启用时需测试'
+}
+function statusIcon(kind: Channel): 'testing' | 'passed' | 'warning' | 'info' {
+  if (testing.value === kind) return 'testing'
+  if (passed(kind)) return 'passed'
+  return needsTest(kind) ? 'warning' : 'info'
 }
 function fill(settings: NotificationSettings) {
   loaded.value = settings
   Object.assign(form, {
     ...settings,
-    smtp_host: settings.smtp_host ?? '',
-    smtp_port: settings.smtp_port ?? 465,
-    smtp_security: settings.smtp_security ?? 'ssl',
-    smtp_username: settings.smtp_username ?? '',
-    smtp_password: '',
-    sender_email: settings.sender_email ?? '',
-    sender_name: settings.sender_name ?? '',
-    recipient_email: settings.recipient_email ?? '',
-    feishu_webhook: '',
-    feishu_secret: '',
+    ...channelFields('email', settings),
+    ...channelFields('feishu', settings),
     advance_time: timeToMinutes(settings.advance_time),
     same_day_time: timeToMinutes(settings.same_day_time),
   })
@@ -209,6 +257,9 @@ watch(
   form,
   () => {
     if (baseline.value) dirty.value = snapshot() !== baseline.value
+    for (const key of Object.keys(fieldErrors.value))
+      if (key in errorValues && (form as Record<string, unknown>)[key] !== errorValues[key])
+        delete fieldErrors.value[key]
   },
   { deep: true, flush: 'sync' },
 )
@@ -266,12 +317,6 @@ const saveBlockedReason = computed(() => {
   if (error.value || !loaded.value) return '通知设置尚未加载成功，请重新加载'
   if (saving.value) return '正在保存通知设置'
   if (testing.value) return '正在测试通知渠道，请等待结果'
-  if (
-    Object.keys(validateNotificationSettings(form, loaded.value.feishu_webhook_configured)).length
-  )
-    return '请填写完整并检查通知设置中的必填项'
-  if (blockedByTest.value.length)
-    return `请先测试通过当前${blockedByTest.value.map((kind) => (kind === 'email' ? '邮件' : '飞书')).join('、')}配置`
   return ''
 })
 async function confirmRetry(message: string) {
@@ -296,7 +341,10 @@ async function save() {
     return
   }
   if (blockedByTest.value.length) {
-    operationMessage.value = '请先测试通过当前修改的通知渠道'
+    operationMessage.value = `请先测试通过当前修改的${blockedByTest.value.map((kind) => channelNames[kind]).join('、')}配置`
+    const first = blockedByTest.value[0]!
+    await nextTick()
+    ;(first === 'email' ? emailTestButton : feishuTestButton).value?.ref?.focus()
     return
   }
   saving.value = true
@@ -487,7 +535,7 @@ onMounted(load)
     </p>
     <p v-if="tab === 'settings' && blockedByTest.length" class="hint" role="status">
       保存前需测试：{{
-        blockedByTest.map((kind) => (kind === 'email' ? '邮件' : '飞书')).join('、')
+        blockedByTest.map((kind) => channelNames[kind]).join('、')
       }}。测试不会覆盖已保存配置。
     </p>
     <el-radio-group v-model="tab" class="content-card"
@@ -503,36 +551,25 @@ onMounted(load)
         @retry="reload"
       /><el-form v-else label-position="top" class="notification-form" :disabled="busy"
         ><el-card class="content-card"
-          ><template #header>提醒规则</template>
-          <div class="rule-grid">
-            <el-form-item label="提前提醒"
-              ><el-switch v-model="form.advance_enabled" /></el-form-item
-            ><el-form-item label="提前天数" :error="fieldErrors.advance_days"
-              ><el-input-number
-                v-model="form.advance_days"
-                :disabled="!form.advance_enabled"
-                :min="0"
-                :max="365" /></el-form-item
-            ><el-form-item label="提前提醒时间" :error="fieldErrors.advance_time"
-              ><el-time-picker
-                v-model="form.advance_time"
-                value-format="HH:mm"
-                format="HH:mm"
-                :disabled="!form.advance_enabled" /></el-form-item
-            ><el-form-item label="当日提醒"
-              ><el-switch v-model="form.same_day_enabled" /></el-form-item
-            ><el-form-item label="当日提醒时间" :error="fieldErrors.same_day_time"
-              ><el-time-picker
-                v-model="form.same_day_time"
-                value-format="HH:mm"
-                format="HH:mm"
-                :disabled="!form.same_day_enabled"
-            /></el-form-item></div></el-card
-        ><el-card class="content-card"
-          ><template #header>邮件通知</template
-          ><el-form-item label="启用邮件通知"
-            ><el-switch v-model="form.email_enabled"
-          /></el-form-item>
+          ><template #header
+            ><div class="section-header">
+              <h2>邮件渠道</h2>
+              <el-switch v-model="form.email_enabled" aria-label="启用邮件渠道" /></div
+          ></template>
+          <div class="channel-status" :class="`channel-status--${statusIcon('email')}`">
+            <svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path :d="iconPaths[statusIcon('email')]" />
+            </svg>
+            <span role="status">{{ statusText('email') }}</span
+            ><el-button
+              v-if="fingerprint('email') !== channelBaseline.email"
+              link
+              type="primary"
+              class="revert-button"
+              @click="revertChannel('email')"
+              >撤销修改</el-button
+            >
+          </div>
           <div class="form-grid">
             <el-form-item label="SMTP 主机" :error="fieldErrors.smtp_host"
               ><el-input v-model="form.smtp_host" :disabled="!form.email_enabled" /></el-form-item
@@ -552,11 +589,12 @@ onMounted(load)
                   value="starttls" /><el-option
                   label="SSL/TLS"
                   value="ssl" /></el-select></el-form-item
-            ><el-form-item label="SMTP 用户名"
+            ><el-form-item label="SMTP 用户名" :error="fieldErrors.smtp_username"
               ><el-input
                 v-model="form.smtp_username"
+                maxlength="255"
                 :disabled="!form.email_enabled" /></el-form-item
-            ><el-form-item label="SMTP 密码/授权码"
+            ><el-form-item label="SMTP 密码/授权码" :error="fieldErrors.smtp_password"
               ><el-input
                 v-model="form.smtp_password"
                 type="password"
@@ -567,47 +605,102 @@ onMounted(load)
               ><el-input
                 v-model="form.sender_email"
                 :disabled="!form.email_enabled" /></el-form-item
-            ><el-form-item label="发件人名称"
-              ><el-input v-model="form.sender_name" :disabled="!form.email_enabled" /></el-form-item
+            ><el-form-item label="发件人名称" :error="fieldErrors.sender_name"
+              ><el-input
+                v-model="form.sender_name"
+                maxlength="128"
+                :disabled="!form.email_enabled" /></el-form-item
             ><el-form-item label="收件人邮箱" :error="fieldErrors.recipient_email"
               ><el-input v-model="form.recipient_email" :disabled="!form.email_enabled"
             /></el-form-item>
           </div>
-          <el-button
-            :disabled="!canTestEmail || busy"
-            :loading="testing === 'email'"
-            @click="test('email')"
-            >测试当前邮件配置</el-button
-          >
-          <p class="hint" role="status">{{ statusText('email') }}</p>
-          <p v-if="!canTestEmail" class="hint">填写主机、端口、发件和收件邮箱后可测试。</p></el-card
+          <div class="channel-test">
+            <el-button
+              ref="emailTestButton"
+              :disabled="!canTestEmail || busy"
+              :loading="testing === 'email'"
+              @click="test('email')"
+              >测试当前邮件配置</el-button
+            >
+            <span v-if="!canTestEmail" class="hint">填写主机、端口、发件和收件邮箱后可测试。</span>
+          </div></el-card
         ><el-card class="content-card"
-          ><template #header>飞书通知</template
-          ><el-form-item label="启用飞书通知"
-            ><el-switch v-model="form.feishu_enabled" /></el-form-item
-          ><el-form-item label="Webhook" :error="fieldErrors.feishu_webhook"
+          ><template #header
+            ><div class="section-header">
+              <h2>飞书渠道</h2>
+              <el-switch v-model="form.feishu_enabled" aria-label="启用飞书渠道" /></div
+          ></template>
+          <div class="channel-status" :class="`channel-status--${statusIcon('feishu')}`">
+            <svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path :d="iconPaths[statusIcon('feishu')]" />
+            </svg>
+            <span role="status">{{ statusText('feishu') }}</span
+            ><el-button
+              v-if="fingerprint('feishu') !== channelBaseline.feishu"
+              link
+              type="primary"
+              class="revert-button"
+              @click="revertChannel('feishu')"
+              >撤销修改</el-button
+            >
+          </div>
+          <el-form-item label="Webhook" :error="fieldErrors.feishu_webhook"
             ><el-input
               v-model="form.feishu_webhook"
               type="password"
               show-password
               :placeholder="loaded?.feishu_webhook_configured ? '已配置，留空保持不变' : '未配置'"
               :disabled="!form.feishu_enabled" /></el-form-item
-          ><el-form-item label="签名密钥"
+          ><el-form-item label="签名密钥" :error="fieldErrors.feishu_secret"
             ><el-input
               v-model="form.feishu_secret"
               type="password"
               show-password
               :placeholder="loaded?.feishu_secret_configured ? '已配置，留空保持不变' : '未配置'"
-              :disabled="!form.feishu_enabled" /></el-form-item
-          ><el-button
-            :disabled="!canTestFeishu || busy"
-            :loading="testing === 'feishu'"
-            @click="test('feishu')"
-            >测试当前飞书配置</el-button
-          >
-          <p class="hint" role="status">{{ statusText('feishu') }}</p>
-          <p v-if="!canTestFeishu" class="hint">填写 Webhook 后可测试。</p></el-card
-        >
+              :disabled="!form.feishu_enabled"
+          /></el-form-item>
+          <div class="channel-test">
+            <el-button
+              ref="feishuTestButton"
+              :disabled="!canTestFeishu || busy"
+              :loading="testing === 'feishu'"
+              @click="test('feishu')"
+              >测试当前飞书配置</el-button
+            >
+            <span v-if="!canTestFeishu" class="hint">填写 Webhook 后可测试。</span>
+          </div></el-card
+        ><el-card class="content-card"
+          ><template #header><h2 class="section-title">提醒时间</h2></template>
+          <div class="reminder-row">
+            <el-form-item label="提前提醒"
+              ><el-switch v-model="form.advance_enabled" /></el-form-item
+            ><el-form-item label="提前天数" :error="fieldErrors.advance_days"
+              ><el-input-number
+                v-model="form.advance_days"
+                :disabled="!form.advance_enabled"
+                :min="0"
+                :max="365"
+                :value-on-clear="0" /></el-form-item
+            ><el-form-item label="提醒时间" :error="fieldErrors.advance_time"
+              ><el-time-picker
+                v-model="form.advance_time"
+                value-format="HH:mm"
+                format="HH:mm"
+                :disabled="!form.advance_enabled"
+            /></el-form-item>
+          </div>
+          <div class="reminder-row">
+            <el-form-item label="当日提醒"
+              ><el-switch v-model="form.same_day_enabled" /></el-form-item
+            ><span class="reminder-spacer" aria-hidden="true"></span
+            ><el-form-item label="提醒时间" :error="fieldErrors.same_day_time"
+              ><el-time-picker
+                v-model="form.same_day_time"
+                value-format="HH:mm"
+                format="HH:mm"
+                :disabled="!form.same_day_enabled"
+            /></el-form-item></div
+        ></el-card>
         <div class="form-actions notification-actions">
           <p v-if="saveBlockedReason" class="hint" role="status">{{ saveBlockedReason }}</p>
           <p v-else-if="saveUncertain" class="hint" role="status">
@@ -642,19 +735,105 @@ onMounted(load)
 .notification-form {
   max-width: 720px;
 }
-.rule-grid,
 .form-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--sl-space-4, 16px);
-}
-.form-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 var(--sl-space-4);
+}
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--sl-space-3);
+}
+.section-header h2,
+.section-title {
+  margin: 0;
+  font-size: var(--sl-font-size-md);
+  font-weight: 600;
+}
+.channel-status {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: var(--sl-space-2);
+  margin-bottom: var(--sl-space-4);
+  padding: var(--sl-space-2) var(--sl-space-3);
+  border-radius: var(--sl-radius-sm);
+  background: var(--sl-info-soft);
+  color: var(--sl-info-text);
+  font-size: var(--sl-font-size-sm);
+  line-height: 1.6;
+}
+.channel-status > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.channel-status--passed {
+  background: var(--sl-success-soft);
+  color: var(--sl-success-text);
+}
+.channel-status--warning {
+  background: var(--sl-warning-soft);
+  color: var(--sl-warning-text);
+}
+.channel-status--testing {
+  background: var(--sl-primary-soft);
+  color: var(--sl-primary-text);
+}
+.status-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.channel-status--testing .status-icon {
+  animation: status-spin 0.9s linear infinite;
+}
+@keyframes status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.revert-button {
+  font-size: var(--sl-font-size-sm);
+}
+.channel-test {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sl-space-3);
+}
+.channel-test .hint {
+  margin: 0;
+}
+/* Both reminder rows share one column grid so their time pickers line up. */
+.reminder-row {
+  display: grid;
+  grid-template-columns: 72px 160px minmax(0, 240px);
+  align-items: start;
+  gap: 0 var(--sl-space-5);
+}
+.reminder-row .el-form-item {
+  margin-right: 0;
 }
 @media (max-width: 700px) {
-  .rule-grid,
   .form-grid {
     grid-template-columns: 1fr;
+  }
+  .reminder-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* The sticky bottom bar is the only save action on narrow screens. */
+  .reminder-spacer,
+  .page-container :deep(.page-actions) {
+    display: none;
   }
 }
 </style>

@@ -1,6 +1,7 @@
 import { defineComponent } from 'vue'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { mount, flushPromises } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import BillPlanForm from '@/components/billing/BillPlanForm.vue'
 import {
@@ -26,7 +27,7 @@ describe('unsaved user forms', () => {
     })
     await router.push('/plans/1')
     await router.isReady()
-    const wrapper = mount(RouterView, { global: { plugins: [router] } })
+    const wrapper = mount(RouterView, { global: { plugins: [createPinia(), router] } })
     const form = wrapper.findComponent(BillPlanForm)
     const vm = form.vm as unknown as {
       form: { name: string }

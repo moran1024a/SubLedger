@@ -4,9 +4,16 @@ import { computed } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, shallowMount } from '@vue/test-utils'
 import UsersView from '@/views/admin/UsersView.vue'
-import { createUser, disableUser, getAdminSummary, listUsers, resetUserPassword } from '@/api/users'
+import {
+  createUser,
+  disableUser,
+  enableUser,
+  getAdminSummary,
+  listUsers,
+  resetUserPassword,
+} from '@/api/users'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { CurrentUser } from '@/types/api'
+import { ApiError, type CurrentUser } from '@/types/api'
 import { useAuthStore } from '@/stores/auth'
 
 vi.mock('@/api/users', () => ({
@@ -91,7 +98,12 @@ describe('UsersView', () => {
     })
 
     await vm.submitCreate()
-    expect(createUser).toHaveBeenCalledWith({ username: 'new-user', password: 'password' })
+    expect(createUser).toHaveBeenCalledWith({
+      username: 'new-user',
+      password: 'password',
+      timezone: 'UTC',
+      currency_code: 'CNY',
+    })
   })
 
   it('shows the complete disable warning before disabling a user', async () => {
@@ -261,13 +273,31 @@ it('uses the same discard protection for cancellation, dialog close and navigati
   expect(vm.dirty).toBe(false)
 })
 
+it('treats a changed timezone or currency in the create dialog as unsaved', async () => {
+  const wrapper = mountView()
+  await flushPromises()
+  const vm = wrapper.vm as unknown as {
+    createForm: { timezone: string; currency_code: string }
+    dirty: boolean
+    openCreate: () => Promise<void>
+  }
+  await vm.openCreate()
+  expect(vm.dirty).toBe(false)
+  vm.createForm.timezone = 'Asia/Tokyo'
+  expect(vm.dirty).toBe(true)
+  vm.createForm.timezone = 'UTC'
+  expect(vm.dirty).toBe(false)
+  vm.createForm.currency_code = 'USD'
+  expect(vm.dirty).toBe(true)
+})
+
 it('keeps uncertain creation drafts, never retries automatically and asks before retrying', async () => {
   const wrapper = mountView()
   await flushPromises()
   const vm = wrapper.vm as unknown as {
     createForm: { username: string; password: string; confirm: string }
     createVisible: boolean
-    operationMessage: string
+    createMessage: string
     openCreate: () => Promise<void>
     submitCreate: () => Promise<void>
     check: () => Promise<void>
@@ -276,7 +306,7 @@ it('keeps uncertain creation drafts, never retries automatically and asks before
   Object.assign(vm.createForm, { username: 'new-user', password: 'password', confirm: 'password' })
   vi.mocked(createUser).mockRejectedValueOnce(new Error('offline'))
   await vm.submitCreate()
-  expect(vm.operationMessage).toContain('结果待确认')
+  expect(vm.createMessage).toContain('结果待确认')
   expect(vm.createVisible).toBe(true)
   expect(vm.createForm.password).toBe('password')
   expect(ElMessage.error).not.toHaveBeenCalled()
@@ -413,4 +443,76 @@ it('does not open an old reset dialog after a discard confirmation crosses sessi
   expect(vm.createVisible).toBe(false)
   expect(vm.resetVisible).toBe(false)
   expect(vm.selected).toBeNull()
+})
+
+it('submits the chosen timezone and an uppercased custom currency for a new user', async () => {
+  const wrapper = mountView()
+  await flushPromises()
+  const vm = wrapper.vm as unknown as {
+    createForm: { username: string; password: string; confirm: string; timezone: string }
+    createFieldErrors: Record<string, string>
+    openCreate: () => Promise<void>
+    setCreateCurrency: (value: string) => void
+    submitCreate: () => Promise<void>
+  }
+  await vm.openCreate()
+  Object.assign(vm.createForm, {
+    username: 'member-two',
+    password: 'password',
+    confirm: 'password',
+    timezone: 'Asia/Tokyo',
+  })
+  vm.setCreateCurrency('bad1')
+  await vm.submitCreate()
+  expect(vm.createFieldErrors.currency_code).toBe('货币代码需为 3 到 8 位大写字母')
+  expect(createUser).not.toHaveBeenCalled()
+  vm.setCreateCurrency(' btc ')
+  await vm.submitCreate()
+  expect(createUser).toHaveBeenCalledWith({
+    username: 'member-two',
+    password: 'password',
+    timezone: 'Asia/Tokyo',
+    currency_code: 'BTC',
+  })
+})
+
+it('asks before enabling a user and keeps the account disabled when cancelled', async () => {
+  vi.mocked(enableUser).mockResolvedValue(normalUser)
+  const wrapper = mountView()
+  await flushPromises()
+  const vm = wrapper.vm as unknown as { toggle: (user: CurrentUser) => Promise<void> }
+  const inactive = { ...normalUser, is_active: false }
+  vi.mocked(ElMessageBox.confirm).mockRejectedValueOnce('cancel')
+  await vm.toggle(inactive)
+  expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+    '启用后会补齐该用户的账单并恢复提醒。确定启用吗？',
+    expect.any(String),
+    expect.any(Object),
+  )
+  expect(enableUser).not.toHaveBeenCalled()
+  await vm.toggle(inactive)
+  expect(enableUser).toHaveBeenCalledWith(1)
+})
+
+it('clears each dialog message when that dialog closes', async () => {
+  const wrapper = mountView()
+  await flushPromises()
+  const vm = wrapper.vm as unknown as {
+    createForm: { username: string; password: string; confirm: string }
+    createMessage: string
+    resetMessage: string
+    openCreate: () => Promise<void>
+    submitCreate: () => Promise<void>
+    closeCreate: () => Promise<void>
+  }
+  await vm.openCreate()
+  Object.assign(vm.createForm, { username: 'taken', password: 'password', confirm: 'password' })
+  vi.mocked(createUser).mockRejectedValueOnce(
+    new ApiError({ status: 409, code: 'USERNAME_EXISTS', message: '用户名已存在' }),
+  )
+  await vm.submitCreate()
+  expect(vm.createMessage).toBe('用户名已存在')
+  expect(vm.resetMessage).toBe('')
+  await vm.closeCreate()
+  expect(vm.createMessage).toBe('')
 })

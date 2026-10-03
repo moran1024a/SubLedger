@@ -35,6 +35,8 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingBlock from '@/components/common/LoadingBlock.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
+import { isValidCurrencyCode } from '@/utils/validation'
 import { asApiError, getFieldErrors, isUncertainWrite, writeErrorMessage } from '@/utils/apiErrors'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { useViewScope } from '@/composables/useViewScope'
@@ -45,6 +47,12 @@ const router = useRouter()
 const auth = useAuthStore()
 const identity = computed(() => `${auth.sessionVersion}:${auth.user?.id ?? ''}:${route.params.id}`)
 const user = ref<CurrentUser | null>(null)
+const routeId = computed(() => {
+  const raw = route.params.id
+  return typeof raw === 'string' && /^\d+$/.test(raw) && Number.isSafeInteger(Number(raw))
+    ? Number(raw)
+    : null
+})
 const loading = ref(true)
 const saving = ref(false)
 const resetting = ref(false)
@@ -70,6 +78,11 @@ watch(
   },
   { deep: true, flush: 'sync' },
 )
+function setCurrency(value: unknown) {
+  form.currency_code = String(value ?? '')
+    .trim()
+    .toUpperCase()
+}
 function fillProfile(loaded: CurrentUser) {
   Object.assign(form, {
     username: loaded.username,
@@ -82,7 +95,8 @@ const queryRequests = useQueryRequest()
 async function load() {
   const signal = queryRequests.next()
   const current = scope.capture()
-  const targetId = Number(route.params.id)
+  const targetId = routeId.value
+  if (targetId === null) return
   loading.value = true
   error.value = null
   try {
@@ -118,6 +132,10 @@ async function save() {
   if (!user.value || user.value.id === 0 || busy.value) return
   if (!form.username.trim()) {
     fieldErrors.value = { username: '用户名不能为空' }
+    return
+  }
+  if (!isValidCurrencyCode(form.currency_code)) {
+    fieldErrors.value = { currency_code: '货币代码需为 3 到 8 位大写字母' }
     return
   }
   saving.value = true
@@ -198,6 +216,12 @@ async function toggle() {
         '确认停用用户',
         { type: 'warning', confirmButtonText: '停用', cancelButtonText: '取消' },
       )
+    else
+      await ElMessageBox.confirm(
+        '启用后会补齐该用户的账单并恢复提醒。确定启用吗？',
+        '确认启用用户',
+        { type: 'warning', confirmButtonText: '启用', cancelButtonText: '取消' },
+      )
     if (!current()) return
     if (wasActive) await disableUser(targetId)
     else await enableUser(targetId)
@@ -231,8 +255,7 @@ watch(
       loading.value = false
       queryRequests.cancel()
     }
-    const targetId = Number(route.params.id)
-    if (!authLoading && auth.isAdmin && Number.isSafeInteger(targetId) && targetId >= 0) void load()
+    if (!authLoading && auth.isAdmin && routeId.value !== null) void load()
   },
   { immediate: true },
 )
@@ -244,8 +267,8 @@ watch(
       ><template #actions
         ><el-button @click="router.push('/admin/users')">返回列表</el-button
         ><el-button
-          v-if="user && user.id !== 0"
-          @click="router.push({ path: '/admin/logs/users', query: { user_id: user.id } })"
+          v-if="user"
+          @click="router.push({ path: '/admin/logs/users', query: { user_id: String(user.id) } })"
           >查看日志</el-button
         ><el-button
           v-if="user && user.id !== 0"
@@ -270,7 +293,14 @@ watch(
     >
       此前有操作结果待确认。资料和状态可重新读取核对；密码需让用户尝试新密码。核实后再次提交会要求确认。
     </p>
-    <LoadingBlock v-if="loading" /><ErrorState
+    <EmptyState
+      v-if="routeId === null || error?.status === 404"
+      title="用户不存在或链接无效"
+      description="请从用户列表重新选择账户。"
+      ><el-button type="primary" @click="router.push('/admin/users')"
+        >返回用户列表</el-button
+      ></EmptyState
+    ><LoadingBlock v-else-if="loading" /><ErrorState
       v-else-if="error"
       :message="error.message"
       :request-id="error.requestId"
@@ -287,20 +317,35 @@ watch(
         ><el-form-item label="用户名" :error="fieldErrors.username"
           ><el-input v-model="form.username" :disabled="user.id === 0" /></el-form-item
         ><el-form-item label="时区" :error="fieldErrors.timezone"
-          ><el-select v-model="form.timezone" filterable style="width: 100%"
+          ><el-select
+            v-model="form.timezone"
+            filterable
+            :disabled="user.id === 0"
+            style="width: 100%"
             ><el-option
               v-for="item in timezones"
               :key="item"
               :label="item"
               :value="item" /></el-select></el-form-item
         ><el-form-item label="货币" :error="fieldErrors.currency_code"
-          ><el-select v-model="form.currency_code" style="width: 100%"
+          ><el-select
+            :model-value="form.currency_code"
+            filterable
+            allow-create
+            default-first-option
+            :disabled="user.id === 0"
+            style="width: 100%"
+            @update:model-value="setCurrency"
             ><el-option
               v-for="item in currencies"
               :key="item"
               :label="item"
               :value="item" /></el-select
-        ></el-form-item>
+          ><span v-if="user.id !== 0" class="field-help"
+            >可直接输入其他 3 到 8 位代码</span
+          ></el-form-item
+        >
+        <p v-if="user.id === 0" class="hint" role="note">管理员资料请在个人设置修改</p>
         <div class="form-actions">
           <el-button
             type="primary"
@@ -310,7 +355,7 @@ watch(
             >保存资料</el-button
           >
         </div></el-form
-      ><el-divider />
+      ><el-divider v-if="user.id !== 0" />
       <el-form v-if="user.id !== 0" label-position="top" class="detail-form" :disabled="busy">
         <h3>重置密码</h3>
         <el-form-item label="新密码"
@@ -331,6 +376,14 @@ watch(
 <style scoped>
 .hint {
   color: var(--sl-text-muted);
+}
+.field-help {
+  display: block;
+  width: 100%;
+  margin-top: var(--sl-space-1);
+  color: var(--sl-text-muted);
+  font-size: var(--sl-font-size-xs);
+  line-height: 1.5;
 }
 .detail-form {
   max-width: 560px;

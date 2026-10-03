@@ -107,7 +107,7 @@ async function toggle() {
   try {
     if (target.is_valid)
       await ElMessageBox.confirm(
-        `账单「${target.plan_name}」(${target.due_date}，#${id})。标记无效后不再计入统计和提醒，记录会保留。`,
+        `账单「${target.plan_name}」(${target.due_date}，#${id})。标记无效后不再计入统计、提醒和下一笔账单，记录会保留。`,
         '确认标记无效',
         {
           type: 'warning',
@@ -146,6 +146,7 @@ function viewPlan() {
   <el-drawer
     :model-value="billId !== null"
     title="账单详情"
+    append-to-body
     size="min(460px, 100%)"
     :close-on-click-modal="!saving && !disabled"
     :close-on-press-escape="!saving && !disabled"

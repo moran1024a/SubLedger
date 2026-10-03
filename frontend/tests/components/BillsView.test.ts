@@ -34,7 +34,8 @@ interface BillsVm {
   page: number
   loading: boolean
   error: ApiError | null
-  dateRange: string[] | null
+  startDate: string | null
+  endDate: string | null
   keyword: string
   timeStatus: 'upcoming' | 'passed' | 'all'
   query: () => void
@@ -85,7 +86,8 @@ describe('BillsView', () => {
     const wrapper = mountView()
     await flushPromises()
     const vm = wrapper.vm as unknown as BillsVm
-    vm.dateRange = null
+    vm.startDate = null
+    vm.endDate = null
     vm.query()
     await flushPromises()
 
@@ -204,7 +206,7 @@ describe('bill query interactions', () => {
     wrapper.unmount()
   })
 
-  it('keeps draft filters out of pagination and restores submitted conditions from URL', async () => {
+  it('keeps draft filters out of pagination, preserves the draft, and restores submitted conditions from URL', async () => {
     vi.mocked(listBills).mockResolvedValue({ items: [bill], total: 60, page: 1, page_size: 20 })
     const wrapper = mountView()
     await flushPromises()
@@ -221,7 +223,8 @@ describe('bill query interactions', () => {
       expect.objectContaining({ q: 'cloud', page: 2 }),
       expect.any(AbortSignal),
     )
-    expect(vm.keyword).toBe('cloud')
+    // An edited draft survives paging; only the submitted keyword is used.
+    expect(vm.keyword).toBe('not submitted')
     wrapper.unmount()
     mountView()
     await flushPromises()
@@ -259,7 +262,8 @@ describe('bill query interactions', () => {
     await flushPromises()
     vi.mocked(listBills).mockClear()
     const vm = wrapper.vm as unknown as BillsVm
-    vm.dateRange = ['2026-10-02', '2026-10-01']
+    vm.startDate = '2026-10-02'
+    vm.endDate = '2026-10-01'
     vm.query()
     await flushPromises()
     expect(listBills).not.toHaveBeenCalled()
@@ -321,4 +325,121 @@ it('refreshes default filters when URL normalization does not change the filter 
   pending.resolve({ items: [bill], page: 1, page_size: 20, total: 1 })
   await flushPromises()
   expect(vm.bills).toEqual([])
+})
+
+describe('bill filter drafts and labels', () => {
+  it('syncs untouched drafts to browser navigation while keeping edited ones', async () => {
+    await router.push('/bills?q=cloud&start_date=2026-10-01&page=1')
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as BillsVm
+    expect(vm.keyword).toBe('cloud')
+    expect(vm.startDate).toBe('2026-10-01')
+    vm.startDate = '2026-09-01'
+    await router.push('/bills?q=music&start_date=2026-11-01&end_date=2026-11-30&page=1')
+    await flushPromises()
+    expect(vm.keyword).toBe('music')
+    expect(vm.startDate).toBe('2026-09-01')
+    expect(vm.endDate).toBe('2026-11-30')
+    expect(listBills).toHaveBeenLastCalledWith(
+      expect.objectContaining({ q: 'music', start_date: '2026-11-01', end_date: '2026-11-30' }),
+      expect.any(AbortSignal),
+    )
+  })
+
+  it('round-trips a single-sided date range through the URL', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as BillsVm
+    vm.endDate = '2026-10-31'
+    vm.query()
+    await flushPromises()
+    expect(router.currentRoute.value.query.end_date).toBe('2026-10-31')
+    expect(router.currentRoute.value.query.start_date).toBeUndefined()
+    wrapper.unmount()
+    const restored = mountView()
+    await flushPromises()
+    const next = restored.vm as unknown as BillsVm
+    expect(next.startDate).toBe('')
+    expect(next.endDate).toBe('2026-10-31')
+    expect(listBills).toHaveBeenLastCalledWith(
+      expect.objectContaining({ start_date: '', end_date: '2026-10-31' }),
+      expect.any(AbortSignal),
+    )
+  })
+
+  it('limits each date picker by the other selected date', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as BillsVm & {
+      disabledStart: (date: Date) => boolean
+      disabledEnd: (date: Date) => boolean
+    }
+    expect(vm.disabledStart(new Date(2026, 9, 5))).toBe(false)
+    vm.startDate = '2026-10-05'
+    vm.endDate = '2026-10-20'
+    expect(vm.disabledStart(new Date(2026, 9, 20))).toBe(false)
+    expect(vm.disabledStart(new Date(2026, 9, 21))).toBe(true)
+    expect(vm.disabledEnd(new Date(2026, 9, 5))).toBe(false)
+    expect(vm.disabledEnd(new Date(2026, 9, 4))).toBe(true)
+  })
+
+  it('submits the keyword only from the keyword input on Enter', async () => {
+    const wrapper = shallowMount(BillsView, {
+      global: {
+        plugins: [router],
+        stubs: {
+          PageHeader: true,
+          LoadingBlock: true,
+          ErrorState: true,
+          EmptyState: true,
+          'el-card': { template: '<div><slot /></div>' },
+          'el-input': { template: '<input class="keyword-input" />' },
+          'el-date-picker': { template: '<input class="date-input" />' },
+        },
+      },
+    })
+    await flushPromises()
+    const vm = wrapper.vm as unknown as BillsVm
+    vm.keyword = 'cloud'
+    for (const target of wrapper.findAll('.filter-bar, .date-input'))
+      await target.trigger('keyup.enter')
+    await flushPromises()
+    expect(router.currentRoute.value.query.q).toBeUndefined()
+    await wrapper.find('.keyword-input').trigger('keyup.enter')
+    await flushPromises()
+    expect(router.currentRoute.value.query.q).toBe('cloud')
+  })
+
+  it('labels the applied rule by name and marks a missing rule as deleted', async () => {
+    vi.mocked(listPlans).mockResolvedValue([{ id: 2, name: '云服务' } as never])
+    await router.push('/bills?plan_id=2')
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as { appliedPlanName: string }
+    expect(vm.appliedPlanName).toBe('云服务')
+    await router.push('/bills?plan_id=9')
+    await flushPromises()
+    expect(vm.appliedPlanName).toBe('#9（已删除）')
+  })
+
+  it('does not call a rule deleted before the rule list has loaded', async () => {
+    vi.mocked(listPlans).mockReturnValue(new Promise(() => {}))
+    await router.push('/bills?plan_id=9')
+    const wrapper = mountView()
+    await flushPromises()
+    expect((wrapper.vm as unknown as { appliedPlanName: string }).appliedPlanName).toBe('#9')
+  })
+
+  it('explains that an invalid bill leaves the next-bill summary', async () => {
+    vi.mocked(listBills).mockResolvedValue({ items: [bill], total: 1, page: 1, page_size: 20 })
+    const wrapper = mountView()
+    await flushPromises()
+    await (wrapper.vm as unknown as { toggle: (value: typeof bill) => Promise<void> }).toggle(bill)
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('不再计入统计、提醒和下一笔账单'),
+      '确认标记无效',
+      expect.any(Object),
+    )
+  })
 })

@@ -34,6 +34,10 @@ export function saveBlob(blob: Blob, filename: string) {
   const anchor = document.createElement('a')
   anchor.href = url
   anchor.download = filename
+  anchor.style.display = 'none'
+  document.body.appendChild(anchor)
   anchor.click()
-  URL.revokeObjectURL(url)
+  anchor.remove()
+  // Some browsers start reading the object URL after click() returns.
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }

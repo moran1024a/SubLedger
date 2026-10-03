@@ -1,6 +1,8 @@
 import { defineComponent, h, nextTick } from 'vue'
-import { describe, expect, it, vi } from 'vitest'
-import { shallowMount } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, shallowMount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import { useAuthStore } from '@/stores/auth'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import BillPlanForm from '@/components/billing/BillPlanForm.vue'
 const router = createRouter({
@@ -14,6 +16,8 @@ const ElFormStub = defineComponent({
     return () => h('form', slots.default?.())
   },
 })
+
+beforeEach(() => setActivePinia(createPinia()))
 
 describe('BillPlanForm', () => {
   it('enforces the supported custom cycle bounds in the form validator', () => {
@@ -128,5 +132,85 @@ describe('BillPlanForm', () => {
     resolve(true)
     await saving
     expect(wrapper.emitted('submit')).toHaveLength(1)
+  })
+
+  it('strips whitespace and thousands separators from the amount on blur', async () => {
+    const wrapper = shallowMount(BillPlanForm, {
+      global: {
+        plugins: [router],
+        stubs: {
+          'el-form': ElFormStub,
+          'el-form-item': { template: '<div><slot /></div>' },
+          'el-input': { template: '<input />' },
+        },
+      },
+    })
+    const vm = wrapper.vm as unknown as { form: { amount: string } }
+    vm.form.amount = ' 1,234.50 '
+    await wrapper.find('input[inputmode="decimal"]').trigger('blur')
+    expect(vm.form.amount).toBe('1234.50')
+  })
+
+  it('re-validates the interval when the cycle unit changes on an edited form', async () => {
+    const validateField = vi.fn(() => Promise.resolve(true))
+    const wrapper = shallowMount(BillPlanForm, {
+      global: {
+        plugins: [router],
+        stubs: {
+          'el-form': defineComponent({
+            setup(_, { expose, slots }) {
+              expose({ validate: () => Promise.resolve(true), validateField })
+              return () => h('form', slots.default?.())
+            },
+          }),
+        },
+      },
+    })
+    const vm = wrapper.vm as unknown as { form: { cycle_type: string; cycle_interval: number } }
+    vm.form.cycle_type = 'day'
+    await flushPromises()
+    expect(validateField).toHaveBeenCalledWith('cycle_interval')
+    vm.form.cycle_type = 'once'
+    await flushPromises()
+    expect(validateField).toHaveBeenCalledOnce()
+    expect(vm.form.cycle_interval).toBe(1)
+  })
+
+  it('explains history backfill only for a new recurring rule starting before today', async () => {
+    useAuthStore().user = { timezone: 'Asia/Shanghai' } as never
+    const stubs = { 'el-form': ElFormStub }
+    const wrapper = shallowMount(BillPlanForm, { global: { plugins: [router], stubs } })
+    const vm = wrapper.vm as unknown as { form: { first_due_date: string; cycle_type: string } }
+    const hint = '创建后会补齐今年 1 月 1 日至昨天的历史账单并计入统计'
+    vm.form.first_due_date = '2000-01-01'
+    await nextTick()
+    expect(wrapper.find('.form-summary').text()).toContain(hint)
+    vm.form.cycle_type = 'once'
+    await nextTick()
+    expect(wrapper.find('.form-summary').text()).not.toContain(hint)
+    vm.form.cycle_type = 'month'
+    vm.form.first_due_date = '2999-01-01'
+    await nextTick()
+    expect(wrapper.find('.form-summary').text()).not.toContain(hint)
+    const editing = shallowMount(BillPlanForm, {
+      props: {
+        plan: {
+          id: 1,
+          name: '旧规则',
+          amount: '1.00',
+          first_due_date: '2000-01-01',
+          cycle_type: 'month',
+          cycle_interval: 1,
+          cycle_days: null,
+          is_enabled: true,
+          note: null,
+          future_bills_rebuilt: false,
+          created_at: '2000-01-01T00:00:00Z',
+          updated_at: '2000-01-01T00:00:00Z',
+        },
+      },
+      global: { plugins: [router], stubs },
+    })
+    expect(editing.find('.form-summary').text()).not.toContain(hint)
   })
 })

@@ -233,3 +233,56 @@ it('keeps an uncertain password change recoverable without signing out or silent
   expect(view.passwordError).toContain('结果待确认')
   expect(view.password.next).toBe('new-password')
 })
+
+describe('currency and password validation', () => {
+  type Extended = View & {
+    profileFieldErrors: Record<string, string>
+    passwordFieldErrors: Record<string, string>
+    setCurrency: (value: string) => void
+  }
+  it('accepts a custom currency code in upper case', async () => {
+    const extended = view as Extended
+    extended.setCurrency(' usdt ')
+    expect(extended.profile.currency_code).toBe('USDT')
+    await extended.saveProfile()
+    expect(updateProfile).toHaveBeenCalledWith(expect.objectContaining({ currency_code: 'USDT' }))
+  })
+
+  it('rejects an invalid currency code before submitting', async () => {
+    const extended = view as Extended
+    extended.setCurrency('us1')
+    await extended.saveProfile()
+    expect(updateProfile).not.toHaveBeenCalled()
+    expect(extended.profileFieldErrors.currency_code).toBe('货币代码需为 3 到 8 位大写字母')
+  })
+
+  it('maps local and server password errors to their fields', async () => {
+    const extended = view as Extended
+    Object.assign(extended.password, { current: '', next: 'short', confirm: 'short' })
+    await extended.savePassword()
+    expect(changePassword).not.toHaveBeenCalled()
+    expect(extended.passwordFieldErrors).toEqual({
+      current: '请输入当前密码',
+      next: '新密码至少 8 个字符',
+    })
+    Object.assign(extended.password, {
+      current: 'old-password',
+      next: 'new-password',
+      confirm: 'other-password',
+    })
+    await extended.savePassword()
+    expect(extended.passwordFieldErrors).toEqual({ confirm: '两次新密码不一致' })
+    extended.password.confirm = 'new-password'
+    vi.mocked(changePassword).mockRejectedValueOnce(
+      new ApiError({
+        status: 422,
+        code: 'VALIDATION_ERROR',
+        message: '请求参数无效',
+        fields: [{ field: 'new_password', message: '密码过长' }],
+      }),
+    )
+    await extended.savePassword()
+    expect(extended.passwordFieldErrors).toEqual({ next: '密码过长' })
+    expect(useAuthStore().user?.id).toBe(1)
+  })
+})

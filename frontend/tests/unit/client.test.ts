@@ -70,6 +70,25 @@ describe('api client', () => {
     )
   })
 
+  it('rejects a successful response that is not JSON', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('<html>down</html>', {
+          status: 200,
+          headers: { 'X-Request-ID': 'req-html' },
+        }),
+      ),
+    )
+
+    await expect(request('/plans')).rejects.toMatchObject({
+      status: 200,
+      code: 'INVALID_RESPONSE',
+      message: '服务器返回了无法解析的响应',
+      requestId: 'req-html',
+    })
+  })
+
   it('does not parse a 204 body', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })))
     await expect(request('/auth/logout', { method: 'POST' })).resolves.toBeNull()

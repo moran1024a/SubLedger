@@ -19,11 +19,21 @@ import LogFileTable from '@/components/logs/LogFileTable.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import LoadingBlock from '@/components/common/LoadingBlock.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
+import { useAuthStore } from '@/stores/auth'
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 const users = ref<CurrentUser[]>([])
 const selectedId = ref<number | undefined>()
-const selectedUser = computed(() => users.value.find((user) => user.id === selectedId.value))
+// Kept apart from the search results so a remote search cannot rename the open log card.
+const selectedUser = ref<CurrentUser | null>(null)
+const hasSelection = computed(() => typeof selectedId.value === 'number')
+const options = computed(() =>
+  selectedUser.value && !users.value.some((user) => user.id === selectedUser.value!.id)
+    ? [selectedUser.value, ...users.value]
+    : users.value,
+)
+const userLabel = (user: CurrentUser) => (user.role === 'admin' ? '管理员（自己）' : user.username)
 const {
   files,
   loading,
@@ -32,7 +42,7 @@ const {
   load: loadLogs,
   downloadFile,
 } = useLogFiles(
-  (signal) => (selectedId.value ? getUserLogs(selectedId.value, signal) : []),
+  (signal) => (typeof selectedId.value === 'number' ? getUserLogs(selectedId.value, signal) : []),
   (filename, signal) => downloadUserLog(selectedId.value!, filename, signal),
 )
 const userQueries = useQueryRequest()
@@ -43,7 +53,7 @@ async function loadUsers(q = '') {
   try {
     const result = await listUsers({ q, page_size: 100 }, signal)
     if (signal.aborted || sequence !== userSearchSequence) return
-    users.value = result.items.filter((user) => user.role === 'user')
+    users.value = result.items
   } catch (cause) {
     if (signal.aborted || sequence !== userSearchSequence) return
     ElMessage.error(cause instanceof ApiError ? cause.message : '加载用户失败')
@@ -52,8 +62,10 @@ async function loadUsers(q = '') {
 watch(
   selectedId,
   (value) => {
+    selectedUser.value =
+      typeof value === 'number' ? (options.value.find((user) => user.id === value) ?? null) : null
     void loadLogs()
-    void router.replace({ query: value ? { user_id: String(value) } : {} })
+    void router.replace({ query: typeof value === 'number' ? { user_id: String(value) } : {} })
   },
   { flush: 'sync' },
 )
@@ -62,16 +74,15 @@ onMounted(async () => {
   const signal = linkedQueries.next()
   await loadUsers()
   if (signal.aborted) return
-  const queryId = Number(route.query.user_id)
-  if (Number.isSafeInteger(queryId) && queryId > 0) {
+  const raw = route.query.user_id
+  const queryId = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : NaN
+  if (Number.isSafeInteger(queryId)) {
     try {
       const target =
         users.value.find((user) => user.id === queryId) ?? (await getUser(queryId, signal))
       if (signal.aborted) return
-      if (target.role === 'user') {
-        if (!users.value.some((user) => user.id === queryId)) users.value.push(target)
-        selectedId.value = queryId
-      }
+      if (!users.value.some((user) => user.id === queryId)) users.value.push(target)
+      selectedId.value = queryId
     } catch {
       if (!signal.aborted) ElMessage.error('指定用户不存在或无法加载')
     }
@@ -80,8 +91,13 @@ onMounted(async () => {
 </script>
 <template>
   <div class="page-container">
-    <PageHeader title="用户日志" description="选择普通账户，查看或下载该账户的日志"
+    <PageHeader title="用户日志" description="选择账户，查看或下载该账户的日志"
       ><template #actions
+        ><el-button
+          :loading="loading"
+          :disabled="!hasSelection || downloading !== null"
+          @click="loadLogs"
+          >刷新</el-button
         ><el-button
           type="primary"
           :disabled="loading || error !== null || !files.length || downloading !== null"
@@ -103,7 +119,11 @@ onMounted(async () => {
         placeholder="选择用户"
         aria-label="选择日志用户"
         class="user-select"
-        ><el-option v-for="user in users" :key="user.id" :label="user.username" :value="user.id"
+        ><el-option
+          v-for="user in options"
+          :key="user.id"
+          :label="userLabel(user)"
+          :value="user.id"
       /></el-select>
     </div>
     <LoadingBlock v-if="loading" label="正在读取用户日志" /><ErrorState
@@ -112,7 +132,7 @@ onMounted(async () => {
       :request-id="error.requestId"
       @retry="loadLogs"
     /><EmptyState
-      v-else-if="!selectedId"
+      v-else-if="!hasSelection"
       title="请选择用户"
       description="选择账户后，将显示该账户的日志文件。"
     /><EmptyState
@@ -122,10 +142,14 @@ onMounted(async () => {
     /><el-card v-else class="content-card"
       ><template #header
         ><span
-          >{{ selectedUser?.username || '用户' }}的日志
+          >{{ selectedUser ? userLabel(selectedUser) : '用户' }}的日志
           <span class="text-muted tabular-nums">（{{ files.length }}）</span></span
         ></template
-      ><LogFileTable :files="files" :downloading="downloading" @download="downloadFile"
+      ><LogFileTable
+        :files="files"
+        :downloading="downloading"
+        :timezone="auth.user?.timezone"
+        @download="downloadFile"
     /></el-card>
   </div>
 </template>
@@ -137,7 +161,7 @@ onMounted(async () => {
 .user-select {
   width: 280px;
 }
-@media (max-width: 640px) {
+@media (max-width: 700px) {
   .user-select {
     width: 100%;
   }

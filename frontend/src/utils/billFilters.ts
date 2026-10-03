@@ -20,8 +20,10 @@ export function readBillQuery(query: LocationQuery) {
   const status = ['upcoming', 'passed', 'all'].includes(text('time_status'))
     ? text('time_status')
     : 'upcoming'
-  const start = text('start_date')
-  const end = text('end_date')
+  let start = validDate(text('start_date')) ? text('start_date') : ''
+  let end = validDate(text('end_date')) ? text('end_date') : ''
+  // An inverted range cannot be shown in the two linked pickers, so both sides are dropped.
+  if (start && end && start > end) start = end = ''
   return {
     time_status: status as 'upcoming' | 'passed' | 'all',
     sort: (['asc', 'desc'].includes(text('sort'))
@@ -29,8 +31,8 @@ export function readBillQuery(query: LocationQuery) {
       : status === 'upcoming'
         ? 'asc'
         : 'desc') as 'asc' | 'desc',
-    start_date: validDate(start) ? start : '',
-    end_date: validDate(end) ? end : '',
+    start_date: start,
+    end_date: end,
     q: text('q').trim().slice(0, 128),
     is_valid: ['true', 'false'].includes(text('is_valid')) ? text('is_valid') : '',
     plan_id: positive('plan_id', 0) || undefined,
@@ -44,12 +46,19 @@ export function dateShortcut(
   timezone: string,
   now = new Date(),
 ) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
+  const options: Intl.DateTimeFormatOptions = {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  }).formatToParts(now)
+  }
+  let parts: Intl.DateTimeFormatPart[]
+  try {
+    parts = new Intl.DateTimeFormat('en-US', { ...options, timeZone: timezone }).formatToParts(now)
+  } catch (error) {
+    // An unsupported time zone falls back to the browser zone instead of breaking the page.
+    if (!(error instanceof RangeError)) throw error
+    parts = new Intl.DateTimeFormat('en-US', options).formatToParts(now)
+  }
   const part = (type: string) => Number(parts.find((p) => p.type === type)!.value)
   const year = part('year'),
     month = part('month') - 1,

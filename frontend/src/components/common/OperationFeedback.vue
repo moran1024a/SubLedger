@@ -6,20 +6,27 @@ defineProps<{ message: string; action?: string; disabled?: boolean; loading?: bo
 defineEmits<{ check: [] }>()
 </script>
 <template>
-  <el-alert
-    v-if="message"
-    :title="message"
-    type="warning"
-    :closable="false"
-    show-icon
-    class="operation-feedback"
-    role="status"
-    aria-live="polite"
-  >
-    <el-button v-if="action" text :disabled="disabled" :loading="loading" @click="$emit('check')">{{
-      action
-    }}</el-button>
-  </el-alert>
+  <Transition name="fade">
+    <el-alert
+      v-if="message"
+      :title="message"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="operation-feedback"
+      role="status"
+      aria-live="polite"
+    >
+      <el-button
+        v-if="action"
+        text
+        :disabled="disabled"
+        :loading="loading"
+        @click="$emit('check')"
+        >{{ action }}</el-button
+      >
+    </el-alert>
+  </Transition>
 </template>
 <style scoped>
 .operation-feedback {

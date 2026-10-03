@@ -24,15 +24,23 @@ import { isValidAmount } from '@/utils/validation'
 import { cycleParts, cycleLimits, formatCycle } from '@/utils/format'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { useViewScope } from '@/composables/useViewScope'
+import { useAuthStore } from '@/stores/auth'
+import { dateShortcut } from '@/utils/billFilters'
 
 const props = defineProps<{
   plan?: BillPlan | null
   submitting?: boolean
-  submitDisabled?: boolean
   fieldErrors?: Record<string, string>
 }>()
 const emit = defineEmits<{ submit: [payload: BillPlanPayload]; cancel: [] }>()
 const formRef = ref()
+const auth = useAuthStore()
+// Today in the account timezone; dateShortcut falls back to the browser zone when unsupported.
+const today = computed(() => dateShortcut('next30', auth.user?.timezone ?? 'UTC').range[0]!)
+const todayValue = computed(() => {
+  const [year, month, day] = today.value.split('-').map(Number)
+  return new Date(year!, month! - 1, day!)
+})
 const validating = ref(false)
 const scope = useViewScope(() => props.plan?.id)
 const form = reactive<BillPlanPayload>({
@@ -44,6 +52,14 @@ const form = reactive<BillPlanPayload>({
   cycle_days: null,
   note: '',
 })
+// The backend backfills this year's history only for recurring rules created with a past date.
+const backfillsHistory = computed(
+  () =>
+    !props.plan &&
+    form.cycle_type !== 'once' &&
+    !!form.first_due_date &&
+    form.first_due_date < today.value,
+)
 const rules = {
   name: [
     { required: true, message: '请输入名称', trigger: 'blur' },
@@ -92,13 +108,23 @@ watch(
   },
   { immediate: true },
 )
+const { dirty, confirmDiscard } = useUnsavedChanges()
 watch(
   () => form.cycle_type,
-  (type) => {
-    if (type === 'once') form.cycle_interval = 1
+  async (type) => {
+    if (type === 'once') {
+      form.cycle_interval = 1
+      return
+    }
+    // The interval limit depends on the unit, so re-check an interval the user already entered.
+    if (!dirty.value) return
+    await nextTick()
+    formRef.value?.validateField?.('cycle_interval').catch(() => {})
   },
 )
-const { dirty, confirmDiscard } = useUnsavedChanges()
+function normalizeAmountInput() {
+  form.amount = form.amount.replace(/[\s,]/g, '')
+}
 const baseline = ref(JSON.stringify(form))
 watch(
   form,
@@ -132,7 +158,7 @@ async function focusError() {
 }
 watch(() => props.fieldErrors, focusError)
 async function submit() {
-  if (props.submitting || props.submitDisabled || validating.value) return
+  if (props.submitting || validating.value) return
   const current = scope.capture()
   validating.value = true
   try {
@@ -171,13 +197,18 @@ defineExpose({ markSaved, confirmDiscard })
       ><el-input v-model="form.name" maxlength="128" show-word-limit
     /></el-form-item>
     <el-form-item label="金额" prop="amount" :error="fieldErrors?.amount"
-      ><el-input v-model="form.amount" placeholder="例如 120.00" inputmode="decimal"
+      ><el-input
+        v-model="form.amount"
+        placeholder="例如 120.00"
+        inputmode="decimal"
+        @blur="normalizeAmountInput"
     /></el-form-item>
     <el-form-item label="首次账单日期" prop="first_due_date" :error="fieldErrors?.first_due_date"
       ><el-date-picker
         v-model="form.first_due_date"
         value-format="YYYY-MM-DD"
         type="date"
+        :default-value="todayValue"
         style="width: 100%"
     /></el-form-item>
     <el-form-item label="重复方式 / 周期单位" prop="cycle_type" :error="fieldErrors?.cycle_type">
@@ -205,7 +236,11 @@ defineExpose({ markSaved, confirmDiscard })
     <p class="form-summary" aria-live="polite">
       {{ formatCycle(form.cycle_type, null, form.cycle_interval) }} · 每次
       {{ form.amount || '—' }} · 首次
-      {{ form.first_due_date || '待选择' }}。月、年以首次日期为基准，短月取月末。
+      {{ form.first_due_date || '待选择' }}。月、年以首次日期为基准，短月取月末。{{
+        backfillsHistory
+          ? '首次日期早于今天，创建后会补齐今年 1 月 1 日至昨天的历史账单并计入统计。'
+          : ''
+      }}
     </p>
     <el-form-item label="备注" prop="note" :error="fieldErrors?.note"
       ><el-input v-model="form.note" type="textarea" :rows="4" maxlength="2000" show-word-limit
@@ -213,11 +248,7 @@ defineExpose({ markSaved, confirmDiscard })
     <p v-if="dirty" class="form-summary">有未保存的修改</p>
     <div class="form-actions">
       <el-button :disabled="submitting || validating" @click="cancel">取消</el-button
-      ><el-button
-        type="primary"
-        :disabled="submitDisabled"
-        :loading="submitting || validating"
-        native-type="submit"
+      ><el-button type="primary" :loading="submitting || validating" native-type="submit"
         >保存</el-button
       >
     </div>

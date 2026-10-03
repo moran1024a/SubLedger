@@ -30,7 +30,7 @@ import {
 } from 'element-plus'
 import { useQueryRequest } from '@/composables/useQueryRequest'
 import { asApiError, isUncertainWrite, writeErrorMessage } from '@/utils/apiErrors'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch, type Ref } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { dateShortcut, readBillQuery, validDate } from '@/utils/billFilters'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -41,6 +41,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingBlock from '@/components/common/LoadingBlock.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import RecordCard from '@/components/common/RecordCard.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
 import MoneyText from '@/components/common/MoneyText.vue'
 import { formatCycle, formatDate } from '@/utils/format'
@@ -64,32 +65,69 @@ onBeforeRouteLeave(() => {
 })
 const bills = ref<BillOccurrence[]>([])
 const plans = ref<BillPlan[]>([])
+const plansLoaded = ref(false)
 const loading = ref(true)
 const error = ref<ApiError | null>(null)
 const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
-const dateRange = ref<string[] | null>(null)
+// Date pickers emit null when cleared; treat it as an empty bound.
+const startDate = ref<string | null>('')
+const endDate = ref<string | null>('')
 const timeStatus = ref<BillTimeStatus | 'all'>('upcoming')
 const sort = ref<'asc' | 'desc'>('asc')
 const keyword = ref('')
 const valid = ref<'' | 'true' | 'false'>('')
 const planId = ref('')
-const applied = ref(readBillQuery({}))
-function restore() {
+type AppliedQuery = ReturnType<typeof readBillQuery>
+const applied = ref<AppliedQuery>(readBillQuery({}))
+const drafts = { keyword, valid, planId, startDate, endDate, sort }
+function draftValues(value: AppliedQuery): Record<keyof typeof drafts, string> {
+  return {
+    keyword: value.q,
+    valid: value.is_valid,
+    planId: value.plan_id ? String(value.plan_id) : '',
+    startDate: value.start_date,
+    endDate: value.end_date,
+    sort: value.sort,
+  }
+}
+/**
+ * Copies applied conditions into the drafts. With `previous`, a draft the user changed
+ * away from the previous applied value is kept instead of being overwritten.
+ */
+function syncDrafts(next: AppliedQuery, previous?: AppliedQuery) {
+  const values = draftValues(next)
+  const old = previous && draftValues(previous)
+  for (const key of Object.keys(drafts) as (keyof typeof drafts)[]) {
+    const draft = drafts[key] as Ref<string | null>
+    if (!old || (draft.value ?? '') === old[key]) draft.value = values[key]
+  }
+}
+function restore(previous?: AppliedQuery) {
   applied.value = readBillQuery(route.query)
   page.value = applied.value.page
   pageSize.value = applied.value.page_size
-  dateRange.value =
-    applied.value.start_date || applied.value.end_date
-      ? [applied.value.start_date, applied.value.end_date]
-      : null
   timeStatus.value = applied.value.time_status
-  sort.value = applied.value.sort
-  keyword.value = applied.value.q
-  valid.value = applied.value.is_valid as '' | 'true' | 'false'
-  planId.value = applied.value.plan_id ? String(applied.value.plan_id) : ''
+  syncDrafts(applied.value, previous)
 }
+function setDateDrafts(start: string, end: string) {
+  startDate.value = start
+  endDate.value = end
+}
+function isoDay(date: Date) {
+  const pad = (value: number, size = 2) => String(value).padStart(size, '0')
+  return `${pad(date.getFullYear(), 4)}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+const disabledStart = (date: Date) => !!endDate.value && isoDay(date) > endDate.value
+const disabledEnd = (date: Date) => !!startDate.value && isoDay(date) < startDate.value
+const appliedPlanName = computed(() => {
+  const id = applied.value.plan_id
+  if (!id) return ''
+  const plan = plans.value.find((item) => item.id === id)
+  if (plan) return plan.name
+  return plansLoaded.value ? `#${id}（已删除）` : `#${id}`
+})
 const actionId = ref<number | null>(null)
 const drawerBusy = ref(false)
 const refreshKey = ref(0)
@@ -107,8 +145,8 @@ const pendingFilters = computed(
     valid.value !== applied.value.is_valid ||
     planId.value !== (applied.value.plan_id ? String(applied.value.plan_id) : '') ||
     sort.value !== applied.value.sort ||
-    (dateRange.value?.[0] ?? '') !== applied.value.start_date ||
-    (dateRange.value?.[1] ?? '') !== applied.value.end_date,
+    (startDate.value ?? '') !== applied.value.start_date ||
+    (endDate.value ?? '') !== applied.value.end_date,
 )
 const queryRequests = useQueryRequest()
 async function load() {
@@ -179,21 +217,22 @@ async function navigate(replace = false) {
   const sameFilters =
     JSON.stringify(readBillQuery(route.query)) === JSON.stringify(readBillQuery(query))
   if (router.resolve(target).fullPath === route.fullPath) {
-    restore()
+    restore(readBillQuery(route.query))
     await load()
   } else {
     if (replace) await router.replace(target)
     else await router.push(target)
     // Adding default URL parameters does not trigger the filter watcher.
     if (sameFilters) {
-      restore()
+      restore(readBillQuery(route.query))
       await load()
     }
   }
 }
 function query() {
   if (busy.value) return
-  const [start = '', end = ''] = dateRange.value ?? []
+  const start = startDate.value ?? ''
+  const end = endDate.value ?? ''
   if ((start && !validDate(start)) || (end && !validDate(end)) || (start && end && start > end)) {
     ElMessage.error('请选择有效日期，开始日期不能晚于结束日期')
     return
@@ -221,6 +260,7 @@ function changeStatus() {
     start_date: '',
     end_date: '',
   }
+  setDateDrafts('', '')
   page.value = 1
   void navigate()
 }
@@ -231,6 +271,7 @@ function showHistory() {
 function reset() {
   if (busy.value) return
   applied.value = readBillQuery({})
+  syncDrafts(applied.value)
   page.value = 1
   pageSize.value = 20
   void navigate()
@@ -245,6 +286,7 @@ function shortcut(kind: 'month' | 'next30' | 'lastMonth') {
     time_status: value.status,
     sort: value.status === 'upcoming' ? 'asc' : 'desc',
   }
+  setDateDrafts(value.range[0]!, value.range[1]!)
   page.value = 1
   void navigate()
 }
@@ -273,7 +315,7 @@ async function toggle(bill: BillOccurrence) {
   try {
     if (wasValid)
       await ElMessageBox.confirm(
-        `账单「${bill.plan_name}」(${bill.due_date}，#${id})。标记无效后将不再计入统计、提醒和最近账单倒计时，记录不会被删除。`,
+        `账单「${bill.plan_name}」(${bill.due_date}，#${id})。标记无效后将不再计入统计、提醒和下一笔账单，记录不会被删除。`,
         '确认标记无效',
         { type: 'warning', confirmButtonText: '标记无效', cancelButtonText: '取消' },
       )
@@ -296,11 +338,11 @@ async function toggle(bill: BillOccurrence) {
 }
 watch(
   () => JSON.stringify(readBillQuery(route.query)),
-  () => {
+  (_next, previous) => {
     operationMessage.value = ''
     uncertain.value = false
     actionId.value = null
-    restore()
+    restore(JSON.parse(previous) as AppliedQuery)
     void load()
   },
 )
@@ -311,7 +353,9 @@ onMounted(() => {
   void load()
   void listPlans(signal)
     .then((result) => {
-      if (!signal.aborted) plans.value = result
+      if (signal.aborted) return
+      plans.value = result
+      plansLoaded.value = true
     })
     .catch(() => {
       if (signal.aborted) return
@@ -356,7 +400,7 @@ onMounted(() => {
       <p class="hint">
         按账户时区划分，今天计入未过账单；时间状态不代表付款状态。切换标签会清除日期范围。
       </p>
-      <div class="filters filter-bar" @keyup.enter="query">
+      <div class="filters filter-bar">
         <el-input
           v-model="keyword"
           :disabled="busy"
@@ -364,20 +408,32 @@ onMounted(() => {
           maxlength="128"
           placeholder="搜索账单名称"
           style="width: 200px"
+          @keyup.enter="query"
         />
         <el-button type="primary" :disabled="busy" @click="query">查询</el-button
         ><el-button :aria-expanded="moreFilters" @click="moreFilters = !moreFilters"
           >更多筛选</el-button
         ><el-button :disabled="busy" @click="reset">重置</el-button>
       </div>
-      <div v-show="moreFilters" class="filters filter-bar" @keyup.enter="query">
+      <div v-show="moreFilters" class="filters filter-bar">
         <el-date-picker
-          v-model="dateRange"
+          v-model="startDate"
           :disabled="busy"
+          :disabled-date="disabledStart"
           value-format="YYYY-MM-DD"
-          type="daterange"
-          start-placeholder="开始日期"
-          end-placeholder="结束日期"
+          type="date"
+          placeholder="开始日期"
+          aria-label="开始日期"
+          style="width: 160px"
+        /><el-date-picker
+          v-model="endDate"
+          :disabled="busy"
+          :disabled-date="disabledEnd"
+          value-format="YYYY-MM-DD"
+          type="date"
+          placeholder="结束日期"
+          aria-label="结束日期"
+          style="width: 160px"
         />
         <el-select v-model="sort" :disabled="busy" style="width: 140px">
           <el-option label="日期升序" value="asc" /><el-option
@@ -413,24 +469,33 @@ onMounted(() => {
         <el-button :disabled="busy" @click="shortcut('lastMonth')">上月</el-button>
       </div>
       <p v-if="pendingFilters" class="hint" role="status">筛选已修改，点击“查询”后生效</p>
-      <div class="filters" aria-label="已生效的查询条件">
-        <el-tag v-if="applied.q" :closable="!busy" @close="clearFilter('q')"
+      <TransitionGroup name="fade" tag="div" class="filters" aria-label="已生效的查询条件">
+        <el-tag v-if="applied.q" key="q" :closable="!busy" @close="clearFilter('q')"
           >名称：{{ applied.q }}</el-tag
         >
         <el-tag
           v-if="applied.start_date || applied.end_date"
+          key="date"
           :closable="!busy"
           @close="clearFilter('date')"
           >{{ applied.start_date || '不限' }} 至 {{ applied.end_date || '不限' }}</el-tag
         >
-        <el-tag v-if="applied.is_valid" :closable="!busy" @close="clearFilter('is_valid')">{{
-          applied.is_valid === 'true' ? '有效' : '无效'
-        }}</el-tag>
-        <el-tag v-if="applied.plan_id" :closable="!busy" @close="clearFilter('plan_id')"
-          >规则 #{{ applied.plan_id }}</el-tag
+        <el-tag
+          v-if="applied.is_valid"
+          key="is_valid"
+          :closable="!busy"
+          @close="clearFilter('is_valid')"
+          >{{ applied.is_valid === 'true' ? '有效' : '无效' }}</el-tag
         >
-      </div>
-      <LoadingBlock v-if="loading && !hasLoaded" /><ErrorState
+        <el-tag
+          v-if="applied.plan_id"
+          key="plan_id"
+          :closable="!busy"
+          @close="clearFilter('plan_id')"
+          >规则：{{ appliedPlanName }}</el-tag
+        >
+      </TransitionGroup>
+      <LoadingBlock v-if="loading && !hasLoaded" variant="table" /><ErrorState
         v-if="error"
         :message="hasLoaded ? '刷新失败，以下保留上次结果：' + error.message : error.message"
         :request-id="error.requestId"
@@ -492,22 +557,29 @@ onMounted(() => {
           ></el-table-column
         ></el-table
       >
-      <div class="mobile-bill-list">
-        <article v-for="bill in bills" :key="bill.id" class="mobile-record">
-          <p class="hint">
-            {{ bill.due_date }} · {{ bill.time_status === 'upcoming' ? '未过' : '已过' }}
-          </p>
-          <div class="record-line">
-            <el-button link type="primary" :disabled="busy" @click="openBill(bill.id, $event)">{{
+      <div class="mobile-bill-list sl-stagger">
+        <RecordCard
+          v-for="(bill, index) in bills"
+          :key="bill.id"
+          :style="{ '--i': Math.min(index, 8) }"
+        >
+          <template #title
+            ><el-button link type="primary" :disabled="busy" @click="openBill(bill.id, $event)">{{
               bill.plan_name
-            }}</el-button
-            ><MoneyText class="numeric" :value="bill.amount" :currency="auth.user?.currency_code" />
-          </div>
-          <p class="hint">{{ cycleText(bill) }} · {{ bill.is_valid ? '有效' : '无效' }}</p>
-          <div class="record-actions">
+            }}</el-button></template
+          >
+          <template #amount
+            ><MoneyText class="numeric" :value="bill.amount" :currency="auth.user?.currency_code"
+          /></template>
+          <template #meta
+            >{{ bill.due_date }} · {{ bill.time_status === 'upcoming' ? '未过' : '已过' }} ·
+            {{ cycleText(bill) }} · {{ bill.is_valid ? '有效' : '无效' }}</template
+          >
+          <template #actions>
             <el-button :disabled="busy" @click="openBill(bill.id, $event)">查看详情</el-button>
             <el-button
               :type="bill.is_valid ? 'danger' : 'success'"
+              plain
               :loading="actionId === bill.id"
               :disabled="
                 busy ||
@@ -520,8 +592,8 @@ onMounted(() => {
               @click="toggle(bill)"
               >{{ bill.is_valid ? '标记无效' : '恢复有效' }}</el-button
             >
-          </div>
-        </article>
+          </template>
+        </RecordCard>
       </div>
       <div class="pagination">
         <el-pagination
@@ -550,36 +622,14 @@ onMounted(() => {
 <style scoped>
 .mobile-bill-list {
   display: none;
+  flex-direction: column;
+  gap: var(--sl-space-3);
 }
-.mobile-record {
-  border-bottom: 1px solid var(--sl-border);
-  padding: 14px 0;
-}
-.record-line {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-.record-line > .el-button {
-  min-width: 0;
-  flex: 1;
+.mobile-bill-list .el-button.is-link {
   justify-content: flex-start;
   text-align: left;
   white-space: normal;
   overflow-wrap: anywhere;
-}
-.record-line > .numeric {
-  flex-shrink: 0;
-  text-align: right;
-}
-.record-actions {
-  display: flex;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.record-actions .el-button {
-  margin-left: 0;
 }
 .desktop-bill-table :deep(.el-button.is-link) {
   white-space: normal;
@@ -601,7 +651,7 @@ onMounted(() => {
     display: none;
   }
   .mobile-bill-list {
-    display: block;
+    display: flex;
   }
   .filters :deep(.el-input),
   .filters :deep(.el-select) {

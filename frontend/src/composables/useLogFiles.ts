@@ -52,8 +52,11 @@ export function useLogFiles(
       const result = await download(filename, signal)
       if (!disposed && !signal.aborted) saveBlob(result.blob, result.filename)
     } catch (cause) {
-      if (!disposed && !signal.aborted)
-        ElMessage.error(cause instanceof ApiError ? cause.message : '下载失败')
+      if (!disposed && !signal.aborted) {
+        const message = cause instanceof ApiError ? cause.message : '下载失败'
+        const requestId = cause instanceof ApiError ? cause.requestId : undefined
+        ElMessage.error(requestId ? `${message}（请求 ID：${requestId}）` : message)
+      }
     } finally {
       if (!signal.aborted) downloading.value = null
     }

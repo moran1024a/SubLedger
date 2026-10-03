@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import PlansListView from '@/views/plans/PlansListView.vue'
-import { deletePlan, listPlans } from '@/api/plans'
+import { deletePlan, disablePlan, listPlans } from '@/api/plans'
 import { ElMessageBox } from 'element-plus'
 import { ApiError, type BillPlan } from '@/types/api'
 
@@ -105,5 +105,24 @@ describe('PlansListView', () => {
     await (wrapper.vm as unknown as { remove: (value: BillPlan) => Promise<void> }).remove(plan)
 
     expect(listPlans).toHaveBeenCalledTimes(2)
+  })
+
+  it('uses the same disable and enable explanations as the rule detail', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as { toggle: (value: BillPlan) => Promise<void> }
+    await vm.toggle(plan)
+    expect(ElMessageBox.confirm).toHaveBeenLastCalledWith(
+      expect.stringContaining('今日、本月、全年合计会同步减少'),
+      '确认停用账单规则',
+      expect.any(Object),
+    )
+    expect(disablePlan).toHaveBeenCalledWith(2)
+    await vm.toggle({ ...plan, is_enabled: false })
+    expect(ElMessageBox.confirm).toHaveBeenLastCalledWith(
+      expect.stringContaining('手动标记无效的账单不会恢复。'),
+      '确认启用账单规则',
+      expect.any(Object),
+    )
   })
 })

@@ -466,3 +466,109 @@ it('asks again before a retry can replace a draft retained after a failed reload
   expect(vm.form.smtp_password).toBe('draft-secret')
   expect(vm.dirty).toBe(true)
 })
+
+describe('channel cards', () => {
+  it('keeps the save button enabled for an untested change and explains the block on save', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      form: { smtp_password: string }
+      operationMessage: string
+    }
+    vm.form.smtp_password = 'changed-secret'
+    await flushPromises()
+    const saveButton = wrapper.find('button')
+    expect(saveButton.text()).toBe('保存设置')
+    expect(saveButton.element.disabled).toBe(false)
+    await saveButton.trigger('click')
+    await flushPromises()
+    expect(saveNotificationSettings).not.toHaveBeenCalled()
+    expect(vm.operationMessage).toBe('请先测试通过当前修改的邮件配置')
+  })
+
+  it('reverts a disabled channel and saves it without a test or channel fields', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      form: { email_enabled: boolean; smtp_host: string; smtp_password: string }
+      blockedByTest: string[]
+      save: () => Promise<void>
+    }
+    vm.form.smtp_host = 'changed.example.com'
+    vm.form.smtp_password = 'changed-secret'
+    expect(vm.blockedByTest).toEqual(['email'])
+    vm.form.email_enabled = false
+    expect(vm.form.smtp_host).toBe('smtp.example.com')
+    expect(vm.form.smtp_password).toBe('')
+    expect(vm.blockedByTest).toEqual([])
+    await vm.save()
+    const payload = vi.mocked(saveNotificationSettings).mock.calls[0]![0]
+    expect(payload.email_enabled).toBe(false)
+    expect(payload).not.toHaveProperty('smtp_host')
+    expect(payload).not.toHaveProperty('email_verification_token')
+  })
+
+  it('restores loaded channel values and clears the proof when reverting manually', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      form: { smtp_username: string; smtp_password: string }
+      proofs: { email: { token: string } }
+      channelBaseline: { email: string }
+      fingerprint: (kind: 'email') => string
+      test: (kind: 'email') => Promise<void>
+      revertChannel: (kind: 'email') => void
+    }
+    vm.form.smtp_username = 'other-user'
+    vm.form.smtp_password = 'secret'
+    vi.mocked(testEmail).mockResolvedValue({
+      channel: 'email',
+      verification_token: 'proof',
+      expires_at: new Date(Date.now() + 600_000).toISOString(),
+    })
+    await vm.test('email')
+    expect(vm.proofs.email.token).toBe('proof')
+    vm.revertChannel('email')
+    expect(vm.form.smtp_username).toBe('user')
+    expect(vm.form.smtp_password).toBe('')
+    expect(vm.fingerprint('email')).toBe(vm.channelBaseline.email)
+    expect(vm.proofs.email.token).toBe('')
+  })
+
+  it('describes channels that were never configured', async () => {
+    vi.mocked(getNotificationSettings).mockResolvedValue({
+      ...settings,
+      email_enabled: false,
+      smtp_host: null,
+      feishu_enabled: false,
+      feishu_webhook_configured: false,
+      feishu_secret_configured: false,
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as { statusText: (kind: 'email' | 'feishu') => string }
+    expect(vm.statusText('email')).toBe('尚未配置，启用后需测试通过才能保存')
+    expect(vm.statusText('feishu')).toBe('尚未配置，启用后需测试通过才能保存')
+  })
+
+  it('clears a field error as soon as that field changes', async () => {
+    vi.mocked(getNotificationSettings).mockResolvedValue({ ...settings, email_enabled: false })
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      form: { email_enabled: boolean; smtp_host: string; sender_email: string }
+      fieldErrors: Record<string, string>
+      save: () => Promise<void>
+    }
+    vm.form.email_enabled = true
+    vm.form.smtp_host = ''
+    vm.form.sender_email = ''
+    await vm.save()
+    expect(ElMessage.error).toHaveBeenCalled()
+    expect(vm.fieldErrors.smtp_host).toBeTruthy()
+    expect(vm.fieldErrors.sender_email).toBeTruthy()
+    vm.form.smtp_host = 'smtp.example.com'
+    expect(vm.fieldErrors.smtp_host).toBeUndefined()
+    expect(vm.fieldErrors.sender_email).toBeTruthy()
+  })
+})

@@ -10,4 +10,17 @@ export const timezones = Array.from(
     ...(typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : []),
   ]),
 )
-export const currencies = ['CNY', 'USD', 'EUR', 'GBP', 'JPY', 'SGD', 'HKD']
+export const currencies = [
+  'CNY',
+  'USD',
+  'EUR',
+  'GBP',
+  'JPY',
+  'HKD',
+  'SGD',
+  'TWD',
+  'KRW',
+  'AUD',
+  'CAD',
+  'CHF',
+]
