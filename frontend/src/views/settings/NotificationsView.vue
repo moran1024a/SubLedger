@@ -6,6 +6,7 @@ import 'element-plus/es/components/form-item/style/css'
 import 'element-plus/es/components/input/style/css'
 import 'element-plus/es/components/input-number/style/css'
 import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
 import 'element-plus/es/components/option/style/css'
 import 'element-plus/es/components/radio-button/style/css'
 import 'element-plus/es/components/radio-group/style/css'
@@ -29,7 +30,7 @@ import {
 } from 'element-plus'
 import { useQueryRequest } from '@/composables/useQueryRequest'
 import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getNotificationSettings,
   saveNotificationSettings,
@@ -37,9 +38,10 @@ import {
   testFeishu,
 } from '@/api/notifications'
 import { ApiError, type NotificationPayload, type NotificationSettings } from '@/types/api'
-import { timeToApi, timeToMinutes } from '@/utils/format'
+import { formatDateTime, timeToApi, timeToMinutes } from '@/utils/format'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
-import { asApiError, getFieldErrors, writeErrorMessage } from '@/utils/apiErrors'
+import { useViewScope } from '@/composables/useViewScope'
+import { asApiError, getFieldErrors, isUncertainWrite, writeErrorMessage } from '@/utils/apiErrors'
 import { validateNotificationSettings } from '@/utils/validation'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
@@ -59,6 +61,10 @@ const tab = computed({
   },
 })
 const operationMessage = ref('')
+const scope = useViewScope(() => `${auth.sessionVersion}:${auth.user?.id ?? ''}`)
+const saveUncertain = ref(false)
+const testUncertain = reactive({ email: false, feishu: false })
+const reloading = ref(false)
 type Channel = 'email' | 'feishu'
 const proofs = reactive<
   Record<Channel, { token: string; expires: number; fingerprint: string; message: string }>
@@ -82,7 +88,8 @@ async function focusError() {
   await nextTick()
   pageRoot.value?.querySelector<HTMLElement>('.is-error input, .is-error [tabindex="0"]')?.focus()
 }
-const { dirty } = useUnsavedChanges()
+const busy = computed(() => saving.value || testing.value !== null || reloading.value)
+const { dirty, confirmDiscard } = useUnsavedChanges()
 const form = reactive({
   email_enabled: false,
   smtp_host: '',
@@ -148,6 +155,16 @@ function resetProof(kind: Channel) {
   window.clearTimeout(expiryTimers[kind])
   Object.assign(proofs[kind], { token: '', expires: 0, fingerprint: '', message: '' })
 }
+function expireProofs() {
+  for (const kind of ['email', 'feishu'] as const) {
+    if (proofs[kind].token && proofs[kind].expires <= Date.now()) {
+      const expires = proofs[kind].expires
+      resetProof(kind)
+      proofs[kind].message =
+        `测试结果于 ${formatDateTime(new Date(expires).toISOString(), auth.user?.timezone)} 到期，请重新测试`
+    }
+  }
+}
 for (const kind of ['email', 'feishu'] as const)
   watch(
     () => fingerprint(kind),
@@ -156,8 +173,10 @@ for (const kind of ['email', 'feishu'] as const)
   )
 function statusText(kind: Channel) {
   if (testing.value === kind) return '正在测试当前配置…'
-  if (passed(kind)) return '测试通过，10 分钟内可保存；修改配置后需重新测试'
+  if (passed(kind))
+    return `测试通过，有效至 ${formatDateTime(new Date(proofs[kind].expires).toISOString(), auth.user?.timezone)}（${auth.user?.timezone || '账户时区'}）；修改配置后需重新测试`
   if (proofs[kind].message) return proofs[kind].message
+  if (testUncertain[kind]) return '上次测试发送结果待确认，请先检查是否收到消息；再次测试会要求确认'
   return needsTest(kind)
     ? '当前配置尚未测试，保存前请先测试'
     : '使用已保存配置；修改配置或重新启用时需测试'
@@ -179,36 +198,35 @@ function fill(settings: NotificationSettings) {
     advance_time: timeToMinutes(settings.advance_time),
     same_day_time: timeToMinutes(settings.same_day_time),
   })
-  nextTick(() => {
-    baseline.value = snapshot()
-    dirty.value = false
-    for (const kind of ['email', 'feishu'] as const) {
-      channelBaseline[kind] = fingerprint(kind)
-      resetProof(kind)
-    }
-  })
+  baseline.value = snapshot()
+  dirty.value = false
+  for (const kind of ['email', 'feishu'] as const) {
+    channelBaseline[kind] = fingerprint(kind)
+    resetProof(kind)
+  }
 }
 watch(
   form,
   () => {
     if (baseline.value) dirty.value = snapshot() !== baseline.value
   },
-  { deep: true },
+  { deep: true, flush: 'sync' },
 )
 const queryRequests = useQueryRequest()
 async function load() {
   const signal = queryRequests.next()
+  const current = scope.capture()
   loading.value = true
   error.value = null
   try {
     const result = await getNotificationSettings(signal)
-    if (signal.aborted) return
+    if (signal.aborted || !current()) return
     fill(result)
   } catch (cause) {
-    if (signal.aborted) return
+    if (signal.aborted || !current()) return
     error.value = asApiError(cause, '无法连接服务器，请检查网络或服务状态。')
   } finally {
-    if (!signal.aborted) loading.value = false
+    if (!signal.aborted && current()) loading.value = false
   }
 }
 function payload(forTest?: Channel): NotificationPayload {
@@ -243,9 +261,35 @@ function payload(forTest?: Channel): NotificationPayload {
   return value
 }
 
+const saveBlockedReason = computed(() => {
+  if (loading.value || reloading.value) return '正在读取通知设置，请稍候'
+  if (error.value || !loaded.value) return '通知设置尚未加载成功，请重新加载'
+  if (saving.value) return '正在保存通知设置'
+  if (testing.value) return '正在测试通知渠道，请等待结果'
+  if (
+    Object.keys(validateNotificationSettings(form, loaded.value.feishu_webhook_configured)).length
+  )
+    return '请填写完整并检查通知设置中的必填项'
+  if (blockedByTest.value.length)
+    return `请先测试通过当前${blockedByTest.value.map((kind) => (kind === 'email' ? '邮件' : '飞书')).join('、')}配置`
+  return ''
+})
+async function confirmRetry(message: string) {
+  try {
+    await ElMessageBox.confirm(message, '确认再次提交', {
+      type: 'warning',
+      confirmButtonText: '继续',
+      cancelButtonText: '取消',
+    })
+    return true
+  } catch {
+    return false
+  }
+}
 async function save() {
-  if (loading.value || error.value || !loaded.value || saving.value || testing.value) return
-  fieldErrors.value = validateNotificationSettings(form, loaded.value?.feishu_webhook_configured)
+  if (loading.value || error.value || !loaded.value || busy.value) return
+  expireProofs()
+  fieldErrors.value = validateNotificationSettings(form, loaded.value.feishu_webhook_configured)
   if (Object.keys(fieldErrors.value).length) {
     ElMessage.error('请检查通知设置中的必填项')
     void focusError()
@@ -255,15 +299,38 @@ async function save() {
     operationMessage.value = '请先测试通过当前修改的通知渠道'
     return
   }
-  operationMessage.value = ''
   saving.value = true
+  const current = scope.capture()
+  const submitted = payload()
   try {
-    fill(await saveNotificationSettings(payload()))
+    if (
+      saveUncertain.value &&
+      !(await confirmRetry(
+        '上次保存结果待确认。读取设置不能确认本次密码或密钥已保存，请先核对公开配置并测试已保存渠道。确定已核实并再次保存吗？',
+      ))
+    )
+      return
+    if (!current()) return
+    expireProofs()
+    if (blockedByTest.value.length) {
+      operationMessage.value = '测试结果已过期，请重新测试当前修改的通知渠道'
+      return
+    }
+    const result = await saveNotificationSettings(submitted)
+    if (!current()) return
+    fill(result)
+    saveUncertain.value = false
+    operationMessage.value = ''
     ElMessage.success('通知设置已保存')
   } catch (cause) {
+    if (!current()) return
     fieldErrors.value = getFieldErrors(cause)
     void focusError()
+    saveUncertain.value = isUncertainWrite(cause)
     operationMessage.value = writeErrorMessage(cause)
+    if (saveUncertain.value)
+      operationMessage.value +=
+        '读取设置不能确认密码或密钥是否保存，请核对公开配置并测试已保存渠道。再次保存会要求确认。'
     if (
       cause instanceof ApiError &&
       ['NOTIFICATION_TEST_REQUIRED', 'NOTIFICATION_SETTINGS_CHANGED'].includes(cause.code)
@@ -272,11 +339,11 @@ async function save() {
       resetProof('feishu')
     }
   } finally {
-    saving.value = false
+    if (current()) saving.value = false
   }
 }
 async function test(kind: Channel) {
-  if (saving.value || testing.value || !loaded.value) return
+  if (loading.value || busy.value || !loaded.value) return
   fieldErrors.value = validateNotificationSettings(
     {
       ...form,
@@ -291,38 +358,99 @@ async function test(kind: Channel) {
     void focusError()
     return
   }
-  resetProof(kind)
-  const submitted = fingerprint(kind)
   testing.value = kind
+  const current = scope.capture()
+  const submitted = fingerprint(kind)
+  const submittedPayload = payload(kind)
   try {
-    const result = await (kind === 'email' ? testEmail : testFeishu)(payload(kind))
-    if (fingerprint(kind) !== submitted) return
+    if (
+      testUncertain[kind] &&
+      !(await confirmRetry(
+        '上次测试发送结果待确认，请先检查收件箱或飞书消息。再次测试可能重复发送，确定已核实并继续吗？',
+      ))
+    )
+      return
+    if (!current()) return
+    resetProof(kind)
+    const result = await (kind === 'email' ? testEmail : testFeishu)(submittedPayload)
+    if (!current() || fingerprint(kind) !== submitted) return
+    const expires = Date.parse(result.expires_at)
+    testUncertain[kind] = false
+    if (!result.verification_token || !Number.isFinite(expires) || expires <= Date.now()) {
+      proofs[kind].message = '服务器返回的测试凭据无效或已过期，请重新测试'
+      return
+    }
     Object.assign(proofs[kind], {
       token: result.verification_token,
-      expires: Date.parse(result.expires_at),
+      expires,
       fingerprint: submitted,
       message: '',
     })
     expiryTimers[kind] = window.setTimeout(
       () => {
+        if (!current()) return
         resetProof(kind)
-        proofs[kind].message = '测试结果已过期，请重新测试'
+        proofs[kind].message =
+          `测试结果于 ${formatDateTime(result.expires_at, auth.user?.timezone)} 到期，请重新测试`
       },
-      Math.max(0, proofs[kind].expires - Date.now()),
+      Math.min(2_147_483_647, expires - Date.now()),
     )
     ElMessage.success(
       kind === 'email' ? '邮件服务器已接受测试邮件，请检查收件箱' : '飞书已接受测试消息',
     )
   } catch (cause) {
-    if (fingerprint(kind) === submitted) proofs[kind].message = writeErrorMessage(cause)
+    if (!current() || fingerprint(kind) !== submitted) return
+    testUncertain[kind] = isUncertainWrite(cause)
+    const apiError = asApiError(cause)
+    proofs[kind].message =
+      apiError.status === 429
+        ? apiError.code === 'NOTIFICATION_TEST_BUSY'
+          ? '测试通道繁忙，请稍后手动再试'
+          : '测试请求过于频繁，请等待冷却后手动再试'
+        : writeErrorMessage(cause)
+    if (testUncertain[kind])
+      proofs[kind].message += '请先检查是否收到测试消息，再决定是否继续测试。'
   } finally {
-    testing.value = null
+    if (current()) testing.value = null
   }
 }
 async function reload() {
-  if (dirty.value && !window.confirm('重新加载会放弃尚未保存的修改，确定继续吗？')) return
-  await load()
+  if (busy.value) return
+  reloading.value = true
+  const current = scope.capture()
+  try {
+    if (dirty.value && !(await confirmDiscard('重新加载成功后会放弃尚未保存的修改，确定继续吗？')))
+      return
+    if (!current()) return
+    await load()
+    if (!current() || error.value) return
+    if (saveUncertain.value)
+      operationMessage.value =
+        '已读取服务器当前公开配置；无法确认本次密码或密钥是否保存。请测试已保存渠道并核对，之后再次保存会要求确认。'
+    else operationMessage.value = ''
+  } finally {
+    if (current()) reloading.value = false
+  }
 }
+watch(
+  () => `${auth.sessionVersion}:${auth.user?.id ?? ''}`,
+  () => {
+    queryRequests.cancel()
+    for (const kind of ['email', 'feishu'] as const) resetProof(kind)
+    saveUncertain.value = false
+    testUncertain.email = false
+    testUncertain.feishu = false
+    saving.value = false
+    testing.value = null
+    reloading.value = false
+    loaded.value = null
+    loading.value = true
+    baseline.value = ''
+    dirty.value = false
+    operationMessage.value = ''
+    if (auth.user) void load()
+  },
+)
 onMounted(load)
 </script>
 
@@ -330,23 +458,26 @@ onMounted(load)
   <div ref="pageRoot" class="page-container">
     <PageHeader title="通知设置" description="配置提醒规则和通知渠道"
       ><template #actions
+        ><span v-if="tab === 'settings' && saveBlockedReason" class="hint" role="status">{{
+          saveBlockedReason
+        }}</span
         ><el-button
           v-if="tab === 'settings'"
           type="primary"
           :loading="saving"
-          :disabled="
-            loading ||
-            error !== null ||
-            loaded === null ||
-            testing !== null ||
-            blockedByTest.length > 0
-          "
+          :disabled="Boolean(saveBlockedReason)"
           @click="save"
           >保存设置</el-button
         ></template
       ></PageHeader
     >
-    <OperationFeedback :message="operationMessage" action="重新加载并核实" @check="reload" />
+    <OperationFeedback
+      :message="operationMessage"
+      action="重新加载并核实"
+      :disabled="busy"
+      :loading="reloading"
+      @check="reload"
+    />
     <p v-if="tab === 'settings' && loaded" class="hint">
       账户时区：{{ auth.user?.timezone }}。{{
         form.advance_enabled
@@ -369,12 +500,8 @@ onMounted(load)
         v-else-if="error"
         :message="error.message"
         :request-id="error.requestId"
-        @retry="load"
-      /><el-form
-        v-else
-        label-position="top"
-        class="notification-form"
-        :disabled="saving || testing !== null"
+        @retry="reload"
+      /><el-form v-else label-position="top" class="notification-form" :disabled="busy"
         ><el-card class="content-card"
           ><template #header>提醒规则</template>
           <div class="rule-grid">
@@ -447,7 +574,7 @@ onMounted(load)
             /></el-form-item>
           </div>
           <el-button
-            :disabled="!canTestEmail || saving || testing !== null"
+            :disabled="!canTestEmail || busy"
             :loading="testing === 'email'"
             @click="test('email')"
             >测试当前邮件配置</el-button
@@ -473,14 +600,27 @@ onMounted(load)
               :placeholder="loaded?.feishu_secret_configured ? '已配置，留空保持不变' : '未配置'"
               :disabled="!form.feishu_enabled" /></el-form-item
           ><el-button
-            :disabled="!canTestFeishu || saving || testing !== null"
+            :disabled="!canTestFeishu || busy"
             :loading="testing === 'feishu'"
             @click="test('feishu')"
             >测试当前飞书配置</el-button
           >
           <p class="hint" role="status">{{ statusText('feishu') }}</p>
           <p v-if="!canTestFeishu" class="hint">填写 Webhook 后可测试。</p></el-card
-        ></el-form
+        >
+        <div class="form-actions notification-actions">
+          <p v-if="saveBlockedReason" class="hint" role="status">{{ saveBlockedReason }}</p>
+          <p v-else-if="saveUncertain" class="hint" role="status">
+            上次保存结果待确认；核实后再次保存会要求确认。
+          </p>
+          <el-button
+            type="primary"
+            :loading="saving"
+            :disabled="Boolean(saveBlockedReason)"
+            @click="save"
+            >保存设置</el-button
+          >
+        </div></el-form
       >
     </div>
   </div>
@@ -488,9 +628,16 @@ onMounted(load)
 
 <style scoped>
 .hint {
-  color: #6b7280;
+  color: var(--sl-text-muted);
   font-size: 13px;
   line-height: 1.7;
+}
+.notification-actions {
+  flex-wrap: wrap;
+}
+.notification-actions .hint {
+  flex-basis: 100%;
+  margin: 0;
 }
 .notification-form {
   max-width: 720px;
@@ -499,7 +646,7 @@ onMounted(load)
 .form-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
+  gap: var(--sl-space-4, 16px);
 }
 .form-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));

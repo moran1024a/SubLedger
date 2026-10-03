@@ -93,3 +93,83 @@ describe('notification records queries', () => {
     expect(signal.aborted).toBe(true)
   })
 })
+
+it('resets draft inputs and queries once even when canonical filters are unchanged', async () => {
+  vi.mocked(listNotificationRecords).mockResolvedValue({
+    items: [],
+    total: 0,
+    page: 1,
+    page_size: 20,
+  })
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/settings/notifications', component: { template: '<div />' } }],
+  })
+  await router.push('/settings/notifications?tab=records&page=invalid')
+  const wrapper = mount(NotificationRecords, { global: { plugins: [createPinia(), router] } })
+  await flushPromises()
+  const vm = wrapper.vm as unknown as {
+    channel: string
+    status: string
+    dates: string[] | null
+    reset: () => void
+    load: () => Promise<void>
+  }
+  vm.channel = 'email'
+  vm.status = 'failed'
+  vm.dates = ['2026-01-01', '2026-02-01']
+  vm.reset()
+  await flushPromises()
+  expect(vm.channel).toBe('')
+  expect(vm.status).toBe('')
+  expect(vm.dates).toBeNull()
+  expect(listNotificationRecords).toHaveBeenCalledTimes(2)
+  vm.reset()
+  await flushPromises()
+  expect(listNotificationRecords).toHaveBeenCalledTimes(3)
+  vm.channel = 'feishu'
+  await vm.load()
+  expect(listNotificationRecords).toHaveBeenLastCalledWith(
+    { page: 1, page_size: 20 },
+    expect.any(AbortSignal),
+  )
+})
+
+it('restores notification filters from URL history after a new query', async () => {
+  vi.mocked(listNotificationRecords).mockResolvedValue({
+    items: [],
+    total: 0,
+    page: 1,
+    page_size: 20,
+  })
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/settings/notifications', component: { template: '<div />' } }],
+  })
+  await router.push(
+    '/settings/notifications?tab=records&channel=email&status=failed&start_date=2026-01-01&end_date=2026-02-01',
+  )
+  const wrapper = mount(NotificationRecords, { global: { plugins: [createPinia(), router] } })
+  await flushPromises()
+  const vm = wrapper.vm as unknown as {
+    channel: string
+    status: string
+    dates: string[] | null
+    query: () => void
+  }
+  expect(vm.channel).toBe('email')
+  expect(vm.status).toBe('failed')
+  vm.channel = 'feishu'
+  vm.status = 'sent'
+  vm.query()
+  await flushPromises()
+  router.back()
+  await flushPromises()
+  expect(vm.channel).toBe('email')
+  expect(vm.status).toBe('failed')
+  expect(vm.dates).toEqual(['2026-01-01', '2026-02-01'])
+  expect(listNotificationRecords).toHaveBeenLastCalledWith(
+    expect.objectContaining({ channel: 'email', status: 'failed', start_date: '2026-01-01' }),
+    expect.any(AbortSignal),
+  )
+})

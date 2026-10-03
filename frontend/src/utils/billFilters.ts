@@ -1,5 +1,11 @@
 import type { LocationQuery } from 'vue-router'
 
+export function positiveId(value: unknown): number | null {
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return null
+  const id = Number(value)
+  return Number.isSafeInteger(id) && id > 0 ? id : null
+}
+
 export function validDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || value.startsWith('0000')) return false
   const date = new Date(`${value}T00:00:00Z`)
@@ -9,8 +15,7 @@ export function validDate(value: string): boolean {
 export function readBillQuery(query: LocationQuery) {
   const text = (key: string) => (typeof query[key] === 'string' ? (query[key] as string) : '')
   const positive = (key: string, fallback: number) => {
-    const value = Number(text(key))
-    return Number.isSafeInteger(value) && value > 0 ? value : fallback
+    return positiveId(text(key)) ?? fallback
   }
   const status = ['upcoming', 'passed', 'all'].includes(text('time_status'))
     ? text('time_status')

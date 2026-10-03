@@ -1,13 +1,47 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { download, request, setForbiddenHandler, setUnauthorizedHandler } from '@/api/client'
+import {
+  download,
+  request,
+  setForbiddenHandler,
+  setUnauthorizedHandler,
+  setSessionVersionProvider,
+} from '@/api/client'
 
 beforeEach(() => {
   vi.unstubAllGlobals()
   setUnauthorizedHandler(() => {})
   setForbiddenHandler(() => {})
+  setSessionVersionProvider(() => 0)
 })
 
 describe('api client', () => {
+  it.each([401, 403])(
+    'does not redirect a new session for a late %i from the previous one',
+    async (status) => {
+      let version = 1
+      setSessionVersionProvider(() => version)
+      let complete!: (value: Response) => void
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(
+          () =>
+            new Promise<Response>((resolve) => {
+              complete = resolve
+            }),
+        ),
+      )
+      const unauthorized = vi.fn(),
+        forbidden = vi.fn()
+      setUnauthorizedHandler(unauthorized)
+      setForbiddenHandler(forbidden)
+      const result = expect(request('/plans')).rejects.toMatchObject({ status })
+      version = 2
+      complete(new Response('{}', { status }))
+      await result
+      expect(unauthorized).not.toHaveBeenCalled()
+      expect(forbidden).not.toHaveBeenCalled()
+    },
+  )
   it('sends credentials and parses structured errors', async () => {
     vi.stubGlobal(
       'fetch',

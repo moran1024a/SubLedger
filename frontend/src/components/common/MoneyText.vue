@@ -3,4 +3,6 @@ import { formatMoney } from '@/utils/format'
 defineProps<{ value: string; currency?: string }>()
 </script>
 
-<template>{{ formatMoney(value, currency) }}</template>
+<template>
+  <span class="money-text">{{ formatMoney(value, currency) }}</span>
+</template>

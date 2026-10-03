@@ -5,6 +5,11 @@ export type RequestOptions = RequestInit & { timeoutMs?: number }
 type ErrorHandler = (error: ApiError, url: string) => void | Promise<void>
 let unauthorizedHandler: ErrorHandler | undefined
 let forbiddenHandler: ErrorHandler | undefined
+let sessionVersion = () => 0
+
+export function setSessionVersionProvider(provider: () => number) {
+  sessionVersion = provider
+}
 
 export function setUnauthorizedHandler(handler: ErrorHandler) {
   unauthorizedHandler = handler
@@ -92,10 +97,17 @@ async function perform<T>(
   }
 }
 
-async function handleError(response: Response, body: ApiErrorBody | null, url: string) {
+async function handleError(
+  response: Response,
+  body: ApiErrorBody | null,
+  url: string,
+  version: number,
+) {
   const error = parseError(response.status, body, response.headers.get('X-Request-ID') ?? undefined)
-  if (response.status === 401) await unauthorizedHandler?.(error, url)
-  if (response.status === 403) await forbiddenHandler?.(error, url)
+  if (version === sessionVersion()) {
+    if (response.status === 401) await unauthorizedHandler?.(error, url)
+    if (response.status === 403) await forbiddenHandler?.(error, url)
+  }
   throw error
 }
 
@@ -114,11 +126,12 @@ async function requestAt<T>(
   init: RequestOptions,
   acceptedStatuses: number[] = [],
 ): Promise<T> {
+  const version = sessionVersion()
   return perform(url, init, async (response, check) => {
     const body = await readBody(response)
     check()
     if (!response.ok && !acceptedStatuses.includes(response.status))
-      await handleError(response, body, url)
+      await handleError(response, body, url, version)
     return body as T
   })
 }
@@ -126,11 +139,12 @@ export async function download(
   path: string,
   init: RequestOptions = {},
 ): Promise<{ blob: Blob; filename: string }> {
+  const version = sessionVersion()
   return perform(`${API_BASE}${path}`, { timeoutMs: 60000, ...init }, async (response, check) => {
     if (!response.ok) {
       const body = await readBody(response)
       check()
-      await handleError(response, body, response.url)
+      await handleError(response, body, response.url, version)
     }
     const disposition = response.headers.get('Content-Disposition') ?? ''
     const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1]

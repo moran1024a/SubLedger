@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { dateShortcut, readBillQuery, validDate } from '@/utils/billFilters'
+import { dateShortcut, positiveId, readBillQuery, validDate } from '@/utils/billFilters'
 
 describe('bill query helpers', () => {
+  it('accepts a single safe positive decimal identifier', () => {
+    expect(positiveId('23')).toBe(23)
+    expect(positiveId('003')).toBe(3)
+    for (const value of ['0', '-1', '1.5', '1e2', '0x10', ' 3 ', '9007199254740993', ['3'], null]) {
+      expect(positiveId(value)).toBeNull()
+    }
+  })
   it('defaults to upcoming and validates URL parameters', () => {
     expect(readBillQuery({})).toMatchObject({ time_status: 'upcoming', sort: 'asc', page: 1 })
     expect(

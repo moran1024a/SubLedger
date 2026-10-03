@@ -4,7 +4,7 @@
 
 SubLedger 按 10–20 人的小规模使用场景设计，不设账号数量配额。前端与 API 同源部署，支持直接运行、Docker Compose 和 1Panel，数据存储在部署者管理的外部 MySQL 中。
 
-**当前版本：0.1.7** · Vue 3 + TypeScript · FastAPI + SQLAlchemy · MySQL
+**当前版本：0.1.8** · Vue 3 + TypeScript · FastAPI + SQLAlchemy · MySQL
 
 [快速开始](#快速开始) · [安装与部署](#安装与部署) · [开发指南](#开发指南) · [后端与 API](backend/README.md) · [前端实现](frontend/README.md)
 
@@ -284,6 +284,15 @@ fi
 
 日常维护使用 `docker compose restart backend`、`stop backend`、`start backend`，并保持正确项目名及编排文件。`down` 保留命名卷，`down -v` 会删除它们。
 
+### 从 0.1.7 升级到 0.1.8
+
+本次为界面与交互优化，无新增数据库迁移、配置项或依赖。按常规流程备份并重新构建前端、重启应用即可；原有菜单、账单周期和通知验证要求保持一致。更早版本升级仍需执行下述迁移。
+
+- **字体与布局**：统一系统字体、字号与间距，金额使用等宽数字；导航折叠后显示图标和提示。分页、日期等控件统一中文，管理页与日志页增加手机卡片。
+- **表单保护**：应用内离开、关闭弹窗和放弃编辑使用一致的确认流程；取消导航或操作失败不会解除草稿保护。管理员资料与密码草稿分别处理，修改个人密码前提示未保存的资料。
+- **交互反馈**：修复迟到响应跳转、旧会话响应干扰当前账户、筛选重置未执行、金额格式误判等问题；账单列表、详情及首页在操作后同步刷新，各自保留加载失败提示。
+- **通知与核实**：展示测试凭证的实际到期时间和保存前置条件，字段修改或凭证到期后需重测。写入结果未知时不自动重试；重新读取当前数据不代表已确认原请求成功，密码或密钥需按提示核实后继续。
+
 ### 从 0.1.6 升级到 0.1.7
 
 先停止写入、备份数据库与主密钥，再按上面的升级步骤启动新版。启动时自动执行 `0004_general_cycles`；旧月/季/年/自定义天数规则转换为 `month × 1/3`、`year × 1`、`day × N`，已有账单、金额快照、手动作废状态及通知记录保持不变。回滚需恢复升级前备份，不能只切回旧程序。
@@ -461,16 +470,16 @@ SubLedger/
 从项目根目录生成发布包，版本号必须与后端、前端及 FastAPI 声明一致：
 
 ```bash
-bash scripts/build-release.sh 0.1.7
+bash scripts/build-release.sh 0.1.8
 ```
 
-输出为 `dist/subledger-0.1.7.tar.gz` 和对应的 `.sha256`。脚本按固定文件清单打包源码、文档及部署文件，排除实际配置、密钥、日志、依赖目录和构建产物；它不安装依赖或构建镜像，也不会覆盖已有的同名发布包。
+输出为 `dist/subledger-0.1.8.tar.gz` 和对应的 `.sha256`。脚本按固定文件清单打包源码、文档及部署文件，排除实际配置、密钥、日志、依赖目录和构建产物；它不安装依赖或构建镜像，也不会覆盖已有的同名发布包。
 
 下载或复制两个文件到同一目录后校验：
 
 ```bash
-sha256sum -c subledger-0.1.7.tar.gz.sha256
-tar -tzf subledger-0.1.7.tar.gz
+sha256sum -c subledger-0.1.8.tar.gz.sha256
+tar -tzf subledger-0.1.8.tar.gz
 ```
 
 校验成功后解压到新的空目录。以下示例在目标目录非空时停止：
@@ -483,7 +492,7 @@ tar -tzf subledger-0.1.7.tar.gz
     printf '目标目录非空，请使用新的空目录。\n' >&2
     exit 1
   fi
-  tar -xzf subledger-0.1.7.tar.gz --strip-components=1 -C /opt/subledger
+  tar -xzf subledger-0.1.8.tar.gz --strip-components=1 -C /opt/subledger
 )
 ```
 

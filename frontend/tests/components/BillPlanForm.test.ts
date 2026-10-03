@@ -1,7 +1,12 @@
 import { defineComponent, h, nextTick } from 'vue'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { shallowMount } from '@vue/test-utils'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import BillPlanForm from '@/components/billing/BillPlanForm.vue'
+const router = createRouter({
+  history: createMemoryHistory(),
+  routes: [{ path: '/', component: { template: '<div />' } }],
+})
 
 const ElFormStub = defineComponent({
   setup(_, { expose, slots }) {
@@ -12,7 +17,7 @@ const ElFormStub = defineComponent({
 
 describe('BillPlanForm', () => {
   it('enforces the supported custom cycle bounds in the form validator', () => {
-    const wrapper = shallowMount(BillPlanForm)
+    const wrapper = shallowMount(BillPlanForm, { global: { plugins: [router] } })
     const vm = wrapper.vm as unknown as {
       form: { cycle_type: string }
       rules: {
@@ -38,6 +43,7 @@ describe('BillPlanForm', () => {
   it('shows custom days and emits a normalized payload', async () => {
     const wrapper = shallowMount(BillPlanForm, {
       global: {
+        plugins: [router],
         stubs: {
           'el-form': ElFormStub,
           'el-form-item': { template: '<div><slot /></div>' },
@@ -77,5 +83,50 @@ describe('BillPlanForm', () => {
       note: '生产环境',
       cycle_days: null,
     })
+  })
+
+  it('emits cancellation for the parent to handle without clearing the draft', async () => {
+    const wrapper = shallowMount(BillPlanForm, { global: { plugins: [router] } })
+    const vm = wrapper.vm as unknown as {
+      form: { name: string }
+      dirty: boolean
+      cancel: () => void
+    }
+    vm.form.name = '未保存规则'
+    vm.cancel()
+    expect(wrapper.emitted('cancel')).toHaveLength(1)
+    expect(vm.dirty).toBe(true)
+  })
+
+  it('prevents duplicate submissions while async validation is pending', async () => {
+    let resolve!: (value: boolean) => void
+    const validate = vi.fn(
+      () =>
+        new Promise<boolean>((done) => {
+          resolve = done
+        }),
+    )
+    const wrapper = shallowMount(BillPlanForm, {
+      global: {
+        plugins: [router],
+        stubs: {
+          'el-form': defineComponent({
+            setup(_, { expose, slots }) {
+              expose({ validate })
+              return () => h('form', slots.default?.())
+            },
+          }),
+        },
+      },
+    })
+    const vm = wrapper.vm as unknown as { submit: () => Promise<void>; cancel: () => void }
+    const saving = vm.submit()
+    await vm.submit()
+    vm.cancel()
+    expect(validate).toHaveBeenCalledOnce()
+    expect(wrapper.emitted('cancel')).toBeUndefined()
+    resolve(true)
+    await saving
+    expect(wrapper.emitted('submit')).toHaveLength(1)
   })
 })

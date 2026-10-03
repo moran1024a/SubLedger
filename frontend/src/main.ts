@@ -3,7 +3,11 @@ import { createPinia } from 'pinia'
 import './styles/base.css'
 import App from './App.vue'
 import router from './router'
-import { setForbiddenHandler, setUnauthorizedHandler } from './api/client'
+import {
+  setForbiddenHandler,
+  setUnauthorizedHandler,
+  setSessionVersionProvider,
+} from './api/client'
 import { useAuthStore } from './stores/auth'
 
 const app = createApp(App)
@@ -11,6 +15,7 @@ const pinia = createPinia()
 let authRedirecting = false
 
 app.use(pinia).use(router)
+setSessionVersionProvider(() => useAuthStore(pinia).sessionVersion)
 
 setUnauthorizedHandler(async (_error, url) => {
   const auth = useAuthStore(pinia)

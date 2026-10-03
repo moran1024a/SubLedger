@@ -29,7 +29,7 @@ import { useQueryRequest } from '@/composables/useQueryRequest'
 import { useAuthStore } from '@/stores/auth'
 import { asApiError } from '@/utils/apiErrors'
 import { formatDateTime } from '@/utils/format'
-import { useRoute, useRouter } from 'vue-router'
+import { isNavigationFailure, useRoute, useRouter } from 'vue-router'
 import { notificationLabels as labels, readNotificationQuery } from '@/utils/notificationFilters'
 import LoadingBlock from '@/components/common/LoadingBlock.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
@@ -111,11 +111,19 @@ async function navigate(replace = false) {
   Object.entries(applied).forEach(([key, value]) => {
     if (value !== undefined && key !== 'page' && key !== 'page_size') query[key] = String(value)
   })
+  const sameFilters =
+    JSON.stringify(readNotificationQuery(query)) ===
+    JSON.stringify(readNotificationQuery(route.query))
   if (router.resolve({ query }).fullPath === route.fullPath) await load()
-  else if (replace) await router.replace({ query })
-  else await router.push({ query })
+  else {
+    const result = replace ? await router.replace({ query }) : await router.push({ query })
+    if (!isNavigationFailure(result) && sameFilters) await load()
+  }
 }
 function reset() {
+  channel.value = ''
+  status.value = ''
+  dates.value = null
   applied = {}
   page.value = 1
   pageSize.value = 20
@@ -142,9 +150,11 @@ watch(
 <template>
   <el-card class="content-card">
     <p class="hint">
-      按账户时区筛选提醒日期。结果未知表示渠道未确认送达，请先核实是否收到消息。测试发送不计入账单提醒记录。
+      按账户时区
+      {{ auth.user?.timezone || '当前时区' }}
+      筛选提醒日期。结果未知表示渠道未确认送达，请先核实是否收到消息。测试发送不计入账单提醒记录。
     </p>
-    <div class="filters" @keyup.enter="query">
+    <div class="filter-bar" @keyup.enter="query">
       <el-select v-model="channel" clearable placeholder="通知渠道" style="width: 140px"
         ><el-option label="邮件" value="email" /><el-option label="飞书" value="feishu"
       /></el-select>
@@ -247,11 +257,11 @@ summary {
 }
 .mobile-records article {
   padding: 16px 0;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--sl-border);
   overflow-wrap: anywhere;
 }
 .mobile-records p {
-  color: #6b7280;
+  color: var(--sl-text-muted);
   font-size: 13px;
 }
 @media (max-width: 700px) {
@@ -263,18 +273,12 @@ summary {
   }
 }
 
-.filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-.filters :deep(.el-date-editor) {
+.filter-bar :deep(.el-date-editor) {
   max-width: 100%;
   min-width: 0;
 }
 .hint {
-  color: #6b7280;
+  color: var(--sl-text-muted);
   font-size: 14px;
 }
 .el-pagination {

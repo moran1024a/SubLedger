@@ -13,22 +13,22 @@ export const useAuthStore = defineStore('auth', () => {
 
   const initializationError = ref<unknown>(null)
   let pending: Promise<void> | null = null
-  let generation = 0
+  const sessionVersion = ref(0)
 
   function initialize(): Promise<void> {
     if (initialized.value) return Promise.resolve()
     if (pending) return pending
-    const version = generation
+    const version = sessionVersion.value
     loading.value = true
     initializationError.value = null
     pending = (async () => {
       try {
         const current = await authApi.getCurrentUser()
-        if (version !== generation) return
+        if (version !== sessionVersion.value) return
         user.value = current
         initialized.value = true
       } catch (error) {
-        if (version !== generation) return
+        if (version !== sessionVersion.value) return
         if (error instanceof ApiError && error.status === 401) {
           user.value = null
           initialized.value = true
@@ -37,51 +37,62 @@ export const useAuthStore = defineStore('auth', () => {
           throw error
         }
       } finally {
-        if (version === generation) loading.value = false
-        pending = null
+        if (version === sessionVersion.value) {
+          loading.value = false
+          pending = null
+        }
       }
     })()
     return pending
   }
 
   async function login(username: string, password: string) {
-    generation += 1
+    const version = ++sessionVersion.value
+    pending = null
     loading.value = true
     initializationError.value = null
     try {
-      user.value = await authApi.login(username, password)
+      const loggedIn = await authApi.login(username, password)
+      if (version !== sessionVersion.value) return false
+      user.value = loggedIn
       initialized.value = true
+      return true
     } finally {
-      loading.value = false
+      if (version === sessionVersion.value) loading.value = false
     }
   }
 
   async function logout() {
+    const version = sessionVersion.value
     try {
       await authApi.logout()
     } catch (error) {
       if (!(error instanceof ApiError) || error.status !== 401) throw error
     } finally {
-      clear()
+      if (version === sessionVersion.value) clear()
     }
   }
 
   function clear() {
     clearUnsavedChanges()
     clearPositions()
-    generation += 1
+    sessionVersion.value += 1
+    pending = null
     loading.value = false
     initializationError.value = null
     user.value = null
     initialized.value = true
   }
 
-  function setUser(nextUser: CurrentUser) {
+  function setUser(nextUser: CurrentUser, expectedVersion?: number): boolean {
+    if (expectedVersion !== undefined && expectedVersion !== sessionVersion.value) return false
     user.value = nextUser
+    return true
   }
 
   return {
     user,
+    sessionVersion,
     initializationError,
     initialized,
     loading,

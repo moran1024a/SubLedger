@@ -18,6 +18,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingBlock from '@/components/common/LoadingBlock.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
 import BillDetailDrawer from '@/components/billing/BillDetailDrawer.vue'
+import OperationFeedback from '@/components/common/OperationFeedback.vue'
 const auth = useAuthStore(),
   router = useRouter()
 const data = ref<StatisticsResponse | null>(null),
@@ -29,7 +30,9 @@ const error = ref<ApiError | null>(null),
   billsError = ref<ApiError | null>(null)
 const queries = useQueryRequest(),
   billQueries = useQueryRequest()
-const { billId, openBill, closeBill } = useBillDrawer()
+const { billId, invalidBillId, openBill, closeBill } = useBillDrawer()
+const drawerBusy = ref(false)
+const refreshKey = ref(0)
 const money = (value: string) => formatMoney(value, auth.user?.currency_code)
 async function load() {
   const signal = queries.next()
@@ -56,6 +59,7 @@ async function loadBills() {
     if (!signal.aborted) {
       upcoming.value = result.items
       billsLoaded.value = true
+      refreshKey.value += 1
     }
   } catch (cause) {
     if (!signal.aborted) billsError.value = asApiError(cause)
@@ -119,10 +123,19 @@ onMounted(refresh)
   <div class="page-container">
     <PageHeader title="首页" description="查看有效账单与预计金额，日期按账户时区划分">
       <template #actions
-        ><el-button :loading="loading || billsLoading" @click="refresh">刷新</el-button
-        ><el-button type="primary" @click="router.push('/plans/new')">新建规则</el-button></template
+        ><el-button :disabled="drawerBusy" :loading="loading || billsLoading" @click="refresh"
+          >刷新</el-button
+        ><el-button type="primary" :disabled="drawerBusy" @click="router.push('/plans/new')"
+          >新建规则</el-button
+        ></template
       >
     </PageHeader>
+    <OperationFeedback
+      v-if="invalidBillId"
+      message="账单详情链接无效，请清除链接后重新选择账单。"
+      action="清除无效链接"
+      @check="closeBill"
+    />
     <LoadingBlock v-if="loading && !data" />
     <ErrorState
       v-if="error"
@@ -134,7 +147,7 @@ onMounted(refresh)
       <div class="card-grid">
         <el-card v-for="metric in totals" :key="metric.key"
           ><div class="metric-label">{{ metric.title }}</div>
-          <strong>{{ money(metric.amount) }}</strong
+          <strong class="numeric">{{ money(metric.amount) }}</strong
           ><span>{{ metric.count }} 笔{{ metric.key === 'today' ? '' : '（含未来推算）' }}</span>
           <div>
             <el-button text type="primary" @click="viewPeriod(metric.key)"
@@ -181,16 +194,20 @@ onMounted(refresh)
       />
       <div v-for="bill in upcoming" :key="bill.id" class="upcoming-row">
         <div>
-          <el-button link type="primary" @click="openBill(bill.id, $event)">{{
-            bill.plan_name
-          }}</el-button>
+          <el-button
+            link
+            type="primary"
+            :disabled="drawerBusy"
+            @click="openBill(bill.id, $event)"
+            >{{ bill.plan_name }}</el-button
+          >
           <p>
             {{ bill.due_date }}{{ bill.due_date === data?.date ? ' · 今天' : '' }} ·
             {{ formatCycle(bill.cycle_type, bill.cycle_days, bill.cycle_interval) }}
           </p>
         </div>
-        <strong>{{ money(bill.amount) }}</strong
-        ><el-button @click="openBill(bill.id, $event)">查看</el-button>
+        <strong class="numeric">{{ money(bill.amount) }}</strong
+        ><el-button :disabled="drawerBusy" @click="openBill(bill.id, $event)">查看</el-button>
       </div>
       <el-empty
         v-if="!billsLoading && !billsError && !upcoming.length"
@@ -209,7 +226,13 @@ onMounted(refresh)
         ><el-card shadow="hover">配置提醒</el-card></router-link
       >
     </div>
-    <BillDetailDrawer :bill-id="billId" @close="closeBill" @changed="refresh" />
+    <BillDetailDrawer
+      :bill-id="billId"
+      :refresh-key="refreshKey"
+      @busy="drawerBusy = $event"
+      @close="closeBill"
+      @changed="refresh"
+    />
   </div>
 </template>
 <style scoped>
@@ -217,7 +240,7 @@ onMounted(refresh)
   display: flex;
   gap: 16px;
   align-items: center;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--sl-border);
   padding: 14px 0;
 }
 .upcoming-row > div {
@@ -227,7 +250,7 @@ onMounted(refresh)
 .upcoming-row p,
 .muted,
 details {
-  color: #6b7280;
+  color: var(--sl-text-muted);
   font-size: 13px;
 }
 .upcoming-row p {
@@ -248,15 +271,15 @@ summary {
 }
 .card-grid strong {
   display: block;
-  font-size: 22px;
+  font-size: var(--sl-number-size);
   margin: 12px 0 5px;
 }
 .card-grid span {
-  color: #6b7280;
+  color: var(--sl-text-muted);
   font-size: 13px;
 }
 .metric-label {
-  color: #6b7280;
+  color: var(--sl-text-muted);
 }
 .next-content {
   display: flex;
@@ -265,7 +288,7 @@ summary {
   gap: 16px;
 }
 .next-content p {
-  color: #6b7280;
+  color: var(--sl-text-muted);
 }
 .quick-grid {
   display: grid;
@@ -278,9 +301,26 @@ summary {
 .content-card {
   margin-top: 20px;
 }
+.upcoming-row :deep(.el-button.is-link) {
+  white-space: normal;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.upcoming-row > strong {
+  text-align: right;
+  min-width: 100px;
+  overflow-wrap: anywhere;
+}
+.card-grid strong {
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.average-row span {
+  font-variant-numeric: tabular-nums;
+}
 @media (max-width: 1100px) {
   .card-grid {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 @media (max-width: 640px) {
@@ -291,6 +331,15 @@ summary {
   .next-content {
     align-items: flex-start;
     flex-direction: column;
+  }
+  .upcoming-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+  }
+  .upcoming-row > .el-button {
+    grid-column: 2;
+    justify-self: end;
   }
 }
 </style>

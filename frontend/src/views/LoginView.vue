@@ -13,6 +13,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ApiError } from '@/types/api'
 import { useAuthStore } from '@/stores/auth'
+import { useViewScope } from '@/composables/useViewScope'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -21,34 +22,41 @@ const username = ref('')
 const password = ref('')
 const error = ref('')
 const submitting = ref(false)
+const scope = useViewScope()
 
 async function submit() {
+  if (submitting.value) return
   error.value = ''
   if (!username.value.trim() || !password.value) {
     error.value = '请输入用户名和密码'
     return
   }
   submitting.value = true
+  const current = scope.capture()
   try {
-    await auth.login(username.value.trim(), password.value)
-    await router.push(
-      typeof route.query.redirect === 'string'
-        ? route.query.redirect
-        : auth.isAdmin
-          ? '/admin'
-          : '/',
-    )
+    const loggedIn = await auth.login(username.value.trim(), password.value)
+    if (!current() || !loggedIn) return
+    const redirect = route.query.redirect
+    const target =
+      typeof redirect === 'string' &&
+      redirect.startsWith('/') &&
+      !redirect.startsWith('//') &&
+      !redirect.includes('\\')
+        ? redirect
+        : null
+    await router.push(target ? target : auth.isAdmin ? '/admin' : '/')
   } catch (cause) {
+    if (!current()) return
     const apiError = cause instanceof ApiError ? cause : null
     error.value =
       apiError?.status === 429
         ? '请求过于频繁，请稍后再试'
-        : apiError?.status === 500
+        : apiError && apiError.status >= 500
           ? '服务暂时不可用，请稍后再试'
           : apiError?.status === 0
             ? '无法连接服务器，请检查网络或服务状态。'
             : '用户名或密码错误'
-    password.value = ''
+    if (apiError?.status === 401) password.value = ''
     ElMessage.error(error.value)
   } finally {
     submitting.value = false
@@ -61,7 +69,7 @@ async function submit() {
     <el-card class="login-card"
       ><h1>订阅本</h1>
       <p class="subtitle">SubLedger · 轻量订阅账单管理</p>
-      <el-form @submit.prevent="submit">
+      <el-form label-position="top" :disabled="submitting" @submit.prevent="submit">
         <el-form-item label="用户名"
           ><el-input v-model="username" autocomplete="username"
         /></el-form-item>

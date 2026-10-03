@@ -4,6 +4,7 @@ import {
   formatDate,
   formatDaysRemaining,
   formatMoney,
+  normalizeAmount,
   timeToApi,
   timeToMinutes,
 } from '@/utils/format'
@@ -13,6 +14,14 @@ describe('format helpers', () => {
   it('formats money without floating point conversion', () => {
     expect(formatMoney('1288.00', 'CNY')).toBe('¥1,288.00')
     expect(formatMoney('68', 'SGD')).toBe('SGD 68.00')
+  })
+
+  it('compares decimal representations exactly without rounding large values', () => {
+    expect(normalizeAmount('12.50')).toBe(normalizeAmount('12.5'))
+    expect(normalizeAmount('00012.5000')).toBe('12.5')
+    expect(normalizeAmount('-0.00')).toBe('0')
+    expect(normalizeAmount('9007199254740993.01')).not.toBe(normalizeAmount('9007199254740993.02'))
+    expect(normalizeAmount('1e2')).toBe('1e2')
   })
 
   it('formats cycles and remaining days', () => {

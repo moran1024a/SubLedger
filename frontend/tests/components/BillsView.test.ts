@@ -168,6 +168,7 @@ describe('BillsView', () => {
   })
 
   it('uses the bill response cycle data and confirms invalidation', async () => {
+    vi.mocked(listBills).mockResolvedValue({ items: [bill], total: 1, page: 1, page_size: 20 })
     const wrapper = shallowMount(BillsView, {
       global: {
         plugins: [router],

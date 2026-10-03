@@ -4,6 +4,8 @@ import UserLogsView from '@/views/admin/UserLogsView.vue'
 import { downloadUserLog, getUserLogs, saveBlob } from '@/api/logs'
 import { getUser, listUsers } from '@/api/users'
 import { ApiError, type LogFile } from '@/types/api'
+import EmptyState from '@/components/common/EmptyState.vue'
+import LogFileTable from '@/components/logs/LogFileTable.vue'
 
 const route = vi.hoisted(() => ({ query: {} as Record<string, string> }))
 const router = vi.hoisted(() => ({ replace: vi.fn() }))
@@ -49,6 +51,19 @@ function mountView() {
           template:
             '<button :disabled="disabled || loading" @click="$emit(\'click\')"><slot /></button>',
         },
+        'el-select': {
+          props: ['modelValue'],
+          emits: ['update:modelValue'],
+          template:
+            '<select @change="$emit(\'update:modelValue\', Number($event.target.value))"><slot /></select>',
+        },
+        'el-option': {
+          props: ['label', 'value'],
+          template: '<option :value="value">{{ label }}</option>',
+        },
+        'el-card': {
+          template: '<section><header><slot name="header" /></header><slot /></section>',
+        },
       },
     },
   })
@@ -64,6 +79,49 @@ beforeEach(() => {
 })
 
 describe('UserLogsView', () => {
+  it('labels the user filter and preserves the choose-user and empty-log states', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.get('label').attributes('for')).toBe('log-user-select')
+    expect(wrapper.get('select').attributes('aria-label')).toBe('选择日志用户')
+    expect(wrapper.findComponent(EmptyState).props('title')).toBe('请选择用户')
+    const vm = wrapper.vm as unknown as UserLogsVm
+    vm.selectedId = 1
+    await flushPromises()
+    expect(wrapper.findComponent(EmptyState).props('title')).toBe('暂无日志文件')
+  })
+
+  it('identifies the selected account and passes its files and download events to the shared list', async () => {
+    vi.mocked(listUsers).mockResolvedValueOnce({
+      items: [
+        {
+          id: 1,
+          username: '日志账户'.repeat(12),
+          role: 'user',
+          is_active: true,
+          timezone: 'UTC',
+          currency_code: 'CNY',
+          created_at: '',
+          updated_at: '',
+        },
+      ],
+      total: 1,
+      page: 1,
+      page_size: 100,
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    vi.mocked(getUserLogs).mockResolvedValueOnce([file])
+    const vm = wrapper.vm as unknown as UserLogsVm
+    vm.selectedId = 1
+    await flushPromises()
+    expect(wrapper.text()).toContain(`${'日志账户'.repeat(12)}的日志`)
+    expect(wrapper.findComponent(LogFileTable).props('files')).toEqual([file])
+    wrapper.findComponent(LogFileTable).vm.$emit('download', file.filename)
+    await flushPromises()
+    expect(downloadUserLog).toHaveBeenCalledWith(1, file.filename, expect.any(AbortSignal))
+  })
+
   it.each(['success', 'error'])(
     'ignores an older user %s while the new user is loading',
     async (kind) => {

@@ -19,21 +19,30 @@ onMounted(load)
 </script>
 <template>
   <div class="page-container">
-    <PageHeader title="系统日志"
+    <PageHeader title="系统日志" description="查看系统日志文件和最近修改时间"
       ><template #actions
         ><el-button
-          :disabled="!files.length || downloading !== null"
+          type="primary"
+          :disabled="loading || error !== null || !files.length || downloading !== null"
           :loading="downloading === 'all'"
           @click="downloadFile()"
           >下载全部</el-button
         ></template
       ></PageHeader
-    ><LoadingBlock v-if="loading" /><ErrorState
+    ><LoadingBlock v-if="loading" label="正在读取系统日志" /><ErrorState
       v-else-if="error"
       :message="error.message"
       :request-id="error.requestId"
       @retry="load"
-    /><EmptyState v-else-if="!files.length" title="暂无系统日志" /><el-card v-else
+    /><EmptyState
+      v-else-if="!files.length"
+      title="暂无系统日志"
+      description="产生日志后，文件会显示在这里。"
+    /><el-card v-else class="content-card"
+      ><template #header
+        ><span
+          >日志文件 <span class="text-muted tabular-nums">（{{ files.length }}）</span></span
+        ></template
       ><LogFileTable :files="files" :downloading="downloading" @download="downloadFile"
     /></el-card>
   </div>

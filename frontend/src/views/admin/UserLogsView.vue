@@ -8,7 +8,7 @@ import 'element-plus/es/components/select/style/css'
 import { ElButton, ElCard, ElOption, ElSelect } from 'element-plus'
 import { useQueryRequest } from '@/composables/useQueryRequest'
 import { useLogFiles } from '@/composables/useLogFiles'
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { downloadUserLog, getUserLogs } from '@/api/logs'
@@ -23,6 +23,7 @@ const route = useRoute()
 const router = useRouter()
 const users = ref<CurrentUser[]>([])
 const selectedId = ref<number | undefined>()
+const selectedUser = computed(() => users.value.find((user) => user.id === selectedId.value))
 const {
   files,
   loading,
@@ -79,38 +80,66 @@ onMounted(async () => {
 </script>
 <template>
   <div class="page-container">
-    <PageHeader title="用户日志"
+    <PageHeader title="用户日志" description="选择普通账户，查看或下载该账户的日志"
       ><template #actions
-        ><el-select
-          v-model="selectedId"
-          filterable
-          remote
-          :remote-method="loadUsers"
-          clearable
-          placeholder="选择用户"
-          style="width: 220px"
-          ><el-option
-            v-for="user in users"
-            :key="user.id"
-            :label="user.username"
-            :value="user.id" /></el-select
         ><el-button
+          type="primary"
           :disabled="loading || error !== null || !files.length || downloading !== null"
           :loading="downloading === 'all'"
           @click="downloadFile()"
           >下载全部</el-button
         ></template
       ></PageHeader
-    ><LoadingBlock v-if="loading" /><ErrorState
+    >
+    <div class="filter-bar user-log-filter">
+      <label for="log-user-select">用户</label>
+      <el-select
+        id="log-user-select"
+        v-model="selectedId"
+        filterable
+        remote
+        :remote-method="loadUsers"
+        clearable
+        placeholder="选择用户"
+        aria-label="选择日志用户"
+        class="user-select"
+        ><el-option v-for="user in users" :key="user.id" :label="user.username" :value="user.id"
+      /></el-select>
+    </div>
+    <LoadingBlock v-if="loading" label="正在读取用户日志" /><ErrorState
       v-else-if="error"
       :message="error.message"
       :request-id="error.requestId"
       @retry="loadLogs"
-    /><EmptyState v-else-if="!selectedId" title="请选择用户" /><EmptyState
+    /><EmptyState
+      v-else-if="!selectedId"
+      title="请选择用户"
+      description="选择账户后，将显示该账户的日志文件。"
+    /><EmptyState
       v-else-if="!files.length"
       title="暂无日志文件"
-    /><el-card v-else
+      description="该账户尚未生成日志文件。"
+    /><el-card v-else class="content-card"
+      ><template #header
+        ><span
+          >{{ selectedUser?.username || '用户' }}的日志
+          <span class="text-muted tabular-nums">（{{ files.length }}）</span></span
+        ></template
       ><LogFileTable :files="files" :downloading="downloading" @download="downloadFile"
     /></el-card>
   </div>
 </template>
+
+<style scoped>
+.user-log-filter label {
+  font-weight: 500;
+}
+.user-select {
+  width: 280px;
+}
+@media (max-width: 640px) {
+  .user-select {
+    width: 100%;
+  }
+}
+</style>

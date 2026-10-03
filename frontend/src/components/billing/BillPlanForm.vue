@@ -23,14 +23,18 @@ import type { BillPlan, BillPlanPayload } from '@/types/api'
 import { isValidAmount } from '@/utils/validation'
 import { cycleParts, cycleLimits, formatCycle } from '@/utils/format'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
+import { useViewScope } from '@/composables/useViewScope'
 
 const props = defineProps<{
   plan?: BillPlan | null
   submitting?: boolean
+  submitDisabled?: boolean
   fieldErrors?: Record<string, string>
 }>()
 const emit = defineEmits<{ submit: [payload: BillPlanPayload]; cancel: [] }>()
 const formRef = ref()
+const validating = ref(false)
+const scope = useViewScope(() => props.plan?.id)
 const form = reactive<BillPlanPayload>({
   name: '',
   amount: '',
@@ -110,7 +114,11 @@ function markSaved() {
 watch(
   () => props.plan,
   () => {
-    void nextTick(markSaved)
+    validating.value = false
+    void nextTick(() => {
+      baseline.value = JSON.stringify(form)
+      dirty.value = false
+    })
   },
 )
 const maxInterval = computed(() =>
@@ -124,24 +132,28 @@ async function focusError() {
 }
 watch(() => props.fieldErrors, focusError)
 async function submit() {
-  if (props.submitting) return
+  if (props.submitting || props.submitDisabled || validating.value) return
+  const current = scope.capture()
+  validating.value = true
   try {
     if (!(await formRef.value?.validate())) return
+    if (!current() || props.submitting) return
+    emit('submit', {
+      ...form,
+      name: form.name.trim(),
+      note: form.note?.trim() || null,
+      cycle_days: null,
+    })
   } catch {
-    await focusError()
-    return
+    if (current()) await focusError()
+  } finally {
+    if (current()) validating.value = false
   }
-  emit('submit', {
-    ...form,
-    name: form.name.trim(),
-    note: form.note?.trim() || null,
-    cycle_days: null,
-  })
 }
 function cancel() {
-  if (!props.submitting && confirmDiscard()) emit('cancel')
+  if (!props.submitting && !validating.value) emit('cancel')
 }
-defineExpose({ markSaved })
+defineExpose({ markSaved, confirmDiscard })
 </script>
 
 <template>
@@ -149,7 +161,7 @@ defineExpose({ markSaved })
     ref="formRef"
     :model="form"
     :rules="rules"
-    :disabled="submitting"
+    :disabled="submitting || validating"
     scroll-to-error
     label-position="top"
     class="plan-form"
@@ -200,24 +212,25 @@ defineExpose({ markSaved })
     /></el-form-item>
     <p v-if="dirty" class="form-summary">有未保存的修改</p>
     <div class="form-actions">
-      <el-button @click="cancel">取消</el-button
-      ><el-button type="primary" :loading="submitting" native-type="submit">保存</el-button>
+      <el-button :disabled="submitting || validating" @click="cancel">取消</el-button
+      ><el-button
+        type="primary"
+        :disabled="submitDisabled"
+        :loading="submitting || validating"
+        native-type="submit"
+        >保存</el-button
+      >
     </div>
   </el-form>
 </template>
 
 <style scoped>
 .form-summary {
-  color: #6b7280;
+  color: var(--sl-text-muted);
   font-size: 13px;
   margin: 0 0 18px;
 }
 .plan-form {
   max-width: 720px;
-}
-.form-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
 }
 </style>

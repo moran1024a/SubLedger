@@ -21,6 +21,7 @@ import {
 } from '@/types/api'
 import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingBlock from '@/components/common/LoadingBlock.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
 
 const summary = ref<AdminSummary | null>(null)
 const health = ref<HealthResponse | null>(null)
@@ -38,7 +39,22 @@ const taskLabels: Record<RuntimeTask['status'], string> = {
   error: '异常',
   disabled: '未启用',
 }
+const taskTypes = {
+  waiting: 'info',
+  running: 'primary',
+  ok: 'success',
+  warning: 'warning',
+  error: 'danger',
+  disabled: 'info',
+} as const
 const dateText = (value: string | null) => (value ? formatDateTime(value) : '—')
+const taskResult = (task: RuntimeTask) =>
+  task.last_error ||
+  (task.counts?.removed != null
+    ? `已清理 ${task.counts.removed} 条`
+    : task.counts?.sent != null
+      ? `成功 ${task.counts.sent}，失败 ${task.counts.failed}，未知 ${task.counts.unknown}`
+      : '—')
 async function load() {
   const signal = queries.next()
   loading.value = true
@@ -81,7 +97,7 @@ onMounted(load)
       ><template #actions
         ><el-button :loading="loading" @click="load">刷新</el-button></template
       ></PageHeader
-    ><LoadingBlock v-if="loading" /><template v-else
+    ><LoadingBlock v-if="loading" label="正在读取账户与系统状态" /><template v-else
       ><el-alert
         v-if="error"
         :title="error"
@@ -93,13 +109,13 @@ onMounted(load)
       <div v-if="summary" class="card-grid">
         <el-card
           ><div class="label">账户总数</div>
-          <strong>{{ summary.total_users }}</strong></el-card
+          <strong class="tabular-nums">{{ summary.total_users }}</strong></el-card
         ><el-card
           ><div class="label">启用普通账户</div>
-          <strong>{{ summary.active_users }}</strong></el-card
+          <strong class="tabular-nums">{{ summary.active_users }}</strong></el-card
         ><el-card
           ><div class="label">停用普通账户</div>
-          <strong>{{ summary.inactive_users }}</strong></el-card
+          <strong class="tabular-nums">{{ summary.inactive_users }}</strong></el-card
         >
       </div>
       <el-alert
@@ -111,7 +127,7 @@ onMounted(load)
         class="content-card"
       />
       <el-card class="content-card health-card"
-        ><template #header>系统健康状态</template>
+        ><template #header><h2 class="section-title">系统健康状态</h2></template>
         <div class="health-grid">
           <div>
             <span>应用</span
@@ -166,47 +182,78 @@ onMounted(load)
         class="content-card"
       />
       <el-card v-if="runtime" class="content-card health-card">
-        <template #header>定时任务</template>
+        <template #header><h2 class="section-title">定时任务</h2></template>
         <p class="hint">显示本次服务启动后的执行情况。单个通知渠道失败会标记为需关注。</p>
-        <el-table :data="runtime.tasks" row-key="id">
+        <EmptyState v-if="!runtime.tasks.length" title="暂无定时任务" compact />
+        <el-table v-else :data="runtime.tasks" row-key="id" class="task-table">
           <el-table-column prop="name" label="任务" min-width="120" />
           <el-table-column label="状态" min-width="120"
             ><template #default="{ row }"
-              ><el-tag
-                :type="
-                  row.status === 'error' ? 'danger' : row.status === 'warning' ? 'warning' : 'info'
-                "
-                >{{ taskLabels[row.status as RuntimeTask['status']] }}</el-tag
-              ></template
+              ><el-tag :type="taskTypes[row.status as RuntimeTask['status']]">{{
+                taskLabels[row.status as RuntimeTask['status']]
+              }}</el-tag></template
             ></el-table-column
           >
-          <el-table-column label="最近成功" min-width="170"
+          <el-table-column label="最近成功" min-width="170" class-name="tabular-nums"
             ><template #default="{ row }">{{
               dateText(row.last_success_at)
             }}</template></el-table-column
           >
-          <el-table-column label="下次执行" min-width="170"
+          <el-table-column label="下次执行" min-width="170" class-name="tabular-nums"
             ><template #default="{ row }">{{
               dateText(row.next_run_at)
             }}</template></el-table-column
           >
-          <el-table-column label="耗时" min-width="85"
+          <el-table-column label="耗时" min-width="85" align="right" class-name="tabular-nums"
             ><template #default="{ row }">{{
               row.duration_seconds == null ? '—' : `${row.duration_seconds} 秒`
             }}</template></el-table-column
           >
-          <el-table-column prop="consecutive_failures" label="连续失败" width="100" />
+          <el-table-column
+            prop="consecutive_failures"
+            label="连续失败"
+            width="100"
+            align="right"
+            class-name="tabular-nums"
+          />
           <el-table-column label="执行结果" min-width="170"
             ><template #default="{ row }">{{
-              row.last_error ||
-              (row.counts?.removed != null
-                ? `已清理 ${row.counts.removed} 条`
-                : row.counts?.sent != null
-                  ? `成功 ${row.counts.sent}，失败 ${row.counts.failed}，未知 ${row.counts.unknown}`
-                  : '—')
+              taskResult(row as RuntimeTask)
             }}</template></el-table-column
           >
         </el-table>
+        <ul v-if="runtime.tasks.length" class="task-cards" aria-label="定时任务">
+          <li v-for="task in runtime.tasks" :key="task.id" class="task-card">
+            <div class="task-card-header">
+              <h3>{{ task.name }}</h3>
+              <el-tag :type="taskTypes[task.status]">{{ taskLabels[task.status] }}</el-tag>
+            </div>
+            <dl>
+              <div>
+                <dt>最近成功</dt>
+                <dd class="tabular-nums">{{ dateText(task.last_success_at) }}</dd>
+              </div>
+              <div>
+                <dt>下次执行</dt>
+                <dd class="tabular-nums">{{ dateText(task.next_run_at) }}</dd>
+              </div>
+              <div>
+                <dt>耗时</dt>
+                <dd class="tabular-nums">
+                  {{ task.duration_seconds == null ? '—' : `${task.duration_seconds} 秒` }}
+                </dd>
+              </div>
+              <div>
+                <dt>连续失败</dt>
+                <dd class="tabular-nums">{{ task.consecutive_failures }}</dd>
+              </div>
+              <div class="task-result">
+                <dt>执行结果</dt>
+                <dd>{{ taskResult(task) }}</dd>
+              </div>
+            </dl>
+          </li>
+        </ul>
       </el-card>
     </template>
   </div>
@@ -215,36 +262,114 @@ onMounted(load)
 <style scoped>
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sl-space-4);
+  margin-bottom: var(--sl-space-5);
 }
 .card-grid strong {
   display: block;
-  font-size: 28px;
-  margin: 12px 0 4px;
+  font-size: var(--sl-number-size);
+  line-height: 1.3;
+  font-weight: 600;
+  margin: var(--sl-space-3) 0 var(--sl-space-1);
 }
 .card-grid span,
 .label {
-  color: #6b7280;
+  color: var(--sl-text-muted);
 }
 .health-card {
-  margin-top: 20px;
+  margin-top: var(--sl-space-5);
+}
+.section-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.hint {
+  margin: 0 0 var(--sl-space-4);
+  color: var(--sl-text-muted);
+  overflow-wrap: anywhere;
 }
 .health-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 20px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sl-space-5);
 }
 .health-grid > div {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: var(--sl-space-3);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.task-cards {
+  display: none;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.task-card {
+  padding: var(--sl-space-4) 0;
+  border-top: 1px solid var(--sl-border);
+}
+.task-card:last-child {
+  padding-bottom: 0;
+}
+.task-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--sl-space-3);
+}
+.task-card-header h3 {
+  margin: 0;
+  font-size: var(--sl-font-size);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.task-card dl {
+  margin: var(--sl-space-3) 0 0;
+}
+.task-card dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sl-space-4);
+  margin-top: var(--sl-space-2);
+}
+.task-card dt {
+  color: var(--sl-text-muted);
+  flex-shrink: 0;
+}
+.task-card dd {
+  margin: 0;
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.task-card .task-result {
+  display: block;
+}
+.task-result dd {
+  margin-top: var(--sl-space-1);
+  text-align: left;
 }
 @media (max-width: 700px) {
   .card-grid,
   .health-grid {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .task-table {
+    display: none;
+  }
+  .task-cards {
+    display: block;
+  }
+}
+@media (max-width: 420px) {
+  .card-grid,
+  .health-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>

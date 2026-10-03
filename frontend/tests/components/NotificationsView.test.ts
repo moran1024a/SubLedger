@@ -1,6 +1,8 @@
 import { createPinia, setActivePinia } from 'pinia'
-import { createRouter, createMemoryHistory, type Router } from 'vue-router'
-import { ref } from 'vue'
+import { createRouter, createMemoryHistory, matchedRouteKey, type Router } from 'vue-router'
+import { computed } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { formatDateTime } from '@/utils/format'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import NotificationsView from '@/views/settings/NotificationsView.vue'
@@ -14,13 +16,10 @@ vi.mock('@/api/notifications', () => ({
   testEmail: vi.fn(),
   testFeishu: vi.fn(),
 }))
-vi.mock('@/composables/useUnsavedChanges', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/composables/useUnsavedChanges')>()),
-  useUnsavedChanges: () => ({ dirty: ref(false) }),
-}))
 vi.mock('element-plus', async (importOriginal) => ({
   ...(await importOriginal<typeof import('element-plus')>()),
   ElMessage: { success: vi.fn(), error: vi.fn() },
+  ElMessageBox: { confirm: vi.fn() },
 }))
 
 const settings: NotificationSettings = {
@@ -47,6 +46,9 @@ function mountView() {
   return shallowMount(NotificationsView, {
     global: {
       plugins: [router],
+      provide: {
+        [matchedRouteKey as symbol]: computed(() => router.currentRoute.value.matched[0]),
+      },
       stubs: {
         PageHeader: { template: '<header><slot name="actions" /></header>' },
         LoadingBlock: true,
@@ -71,6 +73,7 @@ beforeEach(async () => {
   await router.push('/settings/notifications')
   await router.isReady()
   vi.clearAllMocks()
+  vi.mocked(ElMessageBox.confirm).mockResolvedValue('confirm' as never)
   vi.mocked(getNotificationSettings).mockResolvedValue(settings)
   vi.mocked(saveNotificationSettings).mockResolvedValue(settings)
 })
@@ -118,6 +121,9 @@ describe('NotificationsView', () => {
     const wrapper = shallowMount(NotificationsView, {
       global: {
         plugins: [router],
+        provide: {
+          [matchedRouteKey as symbol]: computed(() => router.currentRoute.value.matched[0]),
+        },
         stubs: { PageHeader: true, LoadingBlock: true, ErrorState: true },
       },
     })
@@ -145,6 +151,9 @@ describe('NotificationsView', () => {
     const wrapper = shallowMount(NotificationsView, {
       global: {
         plugins: [router],
+        provide: {
+          [matchedRouteKey as symbol]: computed(() => router.currentRoute.value.matched[0]),
+        },
         stubs: { PageHeader: true, LoadingBlock: true, ErrorState: true },
       },
     })
@@ -278,4 +287,182 @@ it('expires a passed draft and prevents saving after its deadline', async () => 
   } finally {
     vi.useRealTimers()
   }
+})
+
+it('shows the server deadline instead of assuming ten minutes', async () => {
+  const wrapper = mountView()
+  await flushPromises()
+  const expiresAt = new Date(Date.now() + 120_000).toISOString()
+  vi.mocked(testEmail).mockResolvedValue({
+    channel: 'email',
+    verification_token: 'short-proof',
+    expires_at: expiresAt,
+  })
+  const vm = wrapper.vm as unknown as {
+    test: (kind: 'email') => Promise<void>
+    statusText: (kind: 'email') => string
+  }
+  await vm.test('email')
+  expect(vm.statusText('email')).toContain(formatDateTime(expiresAt))
+  expect(vm.statusText('email')).not.toContain('10 分钟')
+})
+
+it.each([
+  ['NOTIFICATION_TEST_BUSY', '测试通道繁忙'],
+  ['NOTIFICATION_TEST_RATE_LIMITED', '等待冷却'],
+])('explains %s without retrying or inventing a countdown', async (code, message) => {
+  const wrapper = mountView()
+  await flushPromises()
+  vi.mocked(testEmail).mockRejectedValue(new ApiError({ status: 429, code, message: 'limited' }))
+  const vm = wrapper.vm as unknown as {
+    test: (kind: 'email') => Promise<void>
+    statusText: (kind: 'email') => string
+  }
+  await vm.test('email')
+  expect(vm.statusText('email')).toContain(message)
+  expect(vm.statusText('email')).not.toMatch(/\d+.*秒/)
+  expect(testEmail).toHaveBeenCalledOnce()
+})
+
+it('ignores late tests after unmount without creating expiry timers or messages', async () => {
+  const wrapper = mountView()
+  await flushPromises()
+  let done!: (value: Awaited<ReturnType<typeof testEmail>>) => void
+  vi.mocked(testEmail).mockReturnValue(
+    new Promise((resolve) => {
+      done = resolve
+    }),
+  )
+  const pending = (wrapper.vm as unknown as { test: (kind: 'email') => Promise<void> }).test(
+    'email',
+  )
+  wrapper.unmount()
+  vi.useFakeTimers()
+  try {
+    done({
+      channel: 'email',
+      verification_token: 'late',
+      expires_at: new Date(Date.now() + 120_000).toISOString(),
+    })
+    await pending
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('preserves the draft and dirty state when a confirmed reload fails', async () => {
+  const wrapper = mountView()
+  await flushPromises()
+  const vm = wrapper.vm as unknown as {
+    form: { smtp_password: string }
+    dirty: boolean
+    reload: () => Promise<void>
+  }
+  vm.form.smtp_password = 'unsaved-secret'
+  vi.mocked(getNotificationSettings).mockRejectedValueOnce(new Error('offline'))
+  await vm.reload()
+  expect(ElMessageBox.confirm).toHaveBeenCalledOnce()
+  expect(vm.form.smtp_password).toBe('unsaved-secret')
+  expect(vm.dirty).toBe(true)
+})
+
+it('does not confirm an uncertain secret write from GET and locks its explicit retry confirmation', async () => {
+  const wrapper = mountView()
+  await flushPromises()
+  const vm = wrapper.vm as unknown as {
+    form: { smtp_password: string }
+    save: () => Promise<void>
+    test: (kind: 'email') => Promise<void>
+    reload: () => Promise<void>
+    operationMessage: string
+    saveUncertain: boolean
+  }
+  vm.form.smtp_password = 'new-secret'
+  vi.mocked(testEmail).mockResolvedValue({
+    channel: 'email',
+    verification_token: 'proof',
+    expires_at: new Date(Date.now() + 120_000).toISOString(),
+  })
+  await vm.test('email')
+  vi.mocked(ElMessage.success).mockClear()
+  vi.mocked(saveNotificationSettings).mockRejectedValueOnce(new Error('offline'))
+  await vm.save()
+  expect(vm.saveUncertain).toBe(true)
+  await vm.reload()
+  expect(vm.operationMessage).toContain('无法确认本次密码或密钥是否保存')
+  expect(vm.saveUncertain).toBe(true)
+  expect(ElMessage.success).not.toHaveBeenCalled()
+  let confirm!: () => void
+  vi.mocked(ElMessageBox.confirm).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        confirm = () => resolve('confirm' as never)
+      }) as never,
+  )
+  const pending = vm.save()
+  await vm.save()
+  expect(saveNotificationSettings).toHaveBeenCalledTimes(1)
+  confirm()
+  await pending
+  expect(saveNotificationSettings).toHaveBeenCalledTimes(2)
+})
+
+it('checks expiry again after retry confirmation even if the timer has not run', async () => {
+  const wrapper = mountView()
+  await flushPromises()
+  const vm = wrapper.vm as unknown as {
+    form: { smtp_password: string }
+    test: (kind: 'email') => Promise<void>
+    save: () => Promise<void>
+    operationMessage: string
+  }
+  vi.useFakeTimers()
+  try {
+    vm.form.smtp_password = 'new-secret'
+    vi.mocked(testEmail).mockResolvedValue({
+      channel: 'email',
+      verification_token: 'proof',
+      expires_at: new Date(Date.now() + 1000).toISOString(),
+    })
+    await vm.test('email')
+    vi.mocked(saveNotificationSettings).mockRejectedValueOnce(new Error('offline'))
+    await vm.save()
+    let confirm!: () => void
+    vi.mocked(ElMessageBox.confirm).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          confirm = () => resolve('confirm' as never)
+        }) as never,
+    )
+    const pending = vm.save()
+    vi.setSystemTime(Date.now() + 1001)
+    confirm()
+    await pending
+    expect(saveNotificationSettings).toHaveBeenCalledOnce()
+    expect(vm.operationMessage).toContain('已过期')
+  } finally {
+    wrapper.unmount()
+    vi.useRealTimers()
+  }
+})
+
+it('asks again before a retry can replace a draft retained after a failed reload', async () => {
+  const wrapper = mountView()
+  await flushPromises()
+  const vm = wrapper.vm as unknown as {
+    form: { smtp_password: string }
+    dirty: boolean
+    reload: () => Promise<void>
+  }
+  vm.form.smtp_password = 'draft-secret'
+  vi.mocked(getNotificationSettings).mockRejectedValueOnce(new Error('offline'))
+  await vm.reload()
+  vi.mocked(ElMessageBox.confirm).mockRejectedValueOnce('cancel')
+  wrapper.findComponent(ErrorState).vm.$emit('retry')
+  await flushPromises()
+  expect(getNotificationSettings).toHaveBeenCalledTimes(2)
+  expect(vm.form.smtp_password).toBe('draft-secret')
+  expect(vm.dirty).toBe(true)
 })

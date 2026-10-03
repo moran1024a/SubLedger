@@ -10,6 +10,16 @@ const currencySymbols: Record<string, string> = {
   HKD: 'HK$ ',
 }
 
+// Keep decimal comparison exact even when amounts exceed Number's safe range.
+export function normalizeAmount(value: string): string {
+  const match = /^([+-]?)(\d+)(?:\.(\d+))?$/.exec(value.trim())
+  if (!match) return value
+  const integer = match[2]!.replace(/^0+(?=\d)/, '')
+  const fraction = (match[3] ?? '').replace(/0+$/, '')
+  const sign = match[1] === '-' && (integer !== '0' || fraction) ? '-' : ''
+  return `${sign}${integer}${fraction ? '.' + fraction : ''}`
+}
+
 export function formatMoney(value: string, currencyCode?: string): string {
   const [integer, fraction = '00'] = value.split('.')
   const sign = integer.startsWith('-') ? '-' : ''
