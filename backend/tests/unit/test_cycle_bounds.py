@@ -258,7 +258,7 @@ def test_generic_create_update_statistics_and_equivalent_legacy_patch(db, monkey
     ids = list(db.scalars(select(BillOccurrence.id)))
     monkeypatch.setattr(statistics, 'local_today', lambda _: TODAY)
     totals = statistics.summary(db, user)
-    assert totals['averages'] == {'monthly': '10.00', 'daily': '0.33'}
+    assert totals['averages'] == {'monthly': '10.00', 'daily': '0.33', 'yearly': '120.00'}
     assert totals['current_year'] == {'amount': '240.00', 'count': 1}
     assert not update_plan(db, plan, {'cycle_type': 'year'}, TODAY)
     assert plan.cycle_interval == 2
@@ -278,3 +278,25 @@ def test_general_cycles_stop_at_representable_date(kind):
     plan = make_plan(date.max, kind, None)
     plan.cycle_interval = 2
     assert list(iter_plan_dates(plan, date.max, date.max)) == [date.max]
+
+
+@pytest.mark.parametrize('kind,interval,amount,expected', [
+    ('year', 1, '1.00', '1.00'),
+    ('month', 3, '1.00', '4.00'),
+    ('day', 3, '1.00', '121.67'),
+    ('week', 2, '10.00', '260.71'),
+])
+def test_yearly_average_uses_unrounded_recurring_amounts(db, monkeypatch, kind, interval, amount, expected):
+    user = seed_user(db)
+    create_plan(db, user, BillPlanCreate(name='recurring', amount=amount, first_due_date=TODAY,
+                                       cycle_type=kind, cycle_interval=interval), TODAY)
+    for excluded in ('once', 'disabled', 'deleted'):
+        plan = create_plan(db, user, BillPlanCreate(name=excluded, amount='999.00', first_due_date=TODAY,
+                                                  cycle_type='once' if excluded == 'once' else 'month'), TODAY)
+        if excluded == 'disabled':
+            plan.is_enabled = False
+        if excluded == 'deleted':
+            plan.deleted_at = NOW
+    db.flush()
+    monkeypatch.setattr(statistics, 'local_today', lambda _: TODAY)
+    assert statistics.summary(db, user)['averages']['yearly'] == expected

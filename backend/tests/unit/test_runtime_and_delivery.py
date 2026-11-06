@@ -62,7 +62,7 @@ def test_runtime_endpoint_is_admin_only(tmp_path):
         current.id, current.role = 0, 'admin'
         response = client.get('/api/v1/admin/runtime')
         assert response.status_code == 200
-        assert len(response.json()['tasks']) == 4
+        assert len(response.json()['tasks']) == 5
 
 
 @pytest.fixture
@@ -77,7 +77,7 @@ def database(monkeypatch, tmp_path):
         for i in (1, 2):
             db.add(User(id=i, username=f'u{i}', password_hash='hash', role='user', is_active=True, timezone='UTC', currency_code='CNY', created_at=now, updated_at=now))
             db.add(NotificationSetting(user_id=i, email_enabled=True, smtp_host='smtp.test', smtp_port=25, smtp_security='none', sender_email='a@example.com', recipient_email='b@example.com', same_day_enabled=True, same_day_time=time(0), advance_enabled=False, advance_time=time(9), updated_at=now))
-            db.add(BillPlan(id=i, user_id=i, name=f'plan{i}', amount=1, cycle_type='once', first_due_date=now.date(), is_enabled=True, created_at=now, updated_at=now))
+            db.add(BillPlan(id=i, user_id=i, name=f'plan{i}', amount=1, cycle_type='month', first_due_date=now.date(), is_enabled=True, created_at=now, updated_at=now))
         db.commit()
     yield SimpleNamespace(session=factory)
     engine.dispose()

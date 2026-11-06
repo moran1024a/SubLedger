@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ElDrawer,
@@ -39,6 +39,11 @@ const queries = useQueryRequest()
 const scope = useViewScope(() => props.billId)
 const parentScope = useViewScope(() => route.path)
 const uncertain = ref(false)
+const canRestore = computed(
+  () =>
+    bill.value?.can_restore ??
+    (bill.value?.time_status === 'passed' || bill.value?.plan_status === 'enabled'),
+)
 watch(saving, (value) => emit('busy', value), { flush: 'sync' })
 onBeforeUnmount(() => emit('busy', false))
 async function load(verify = false) {
@@ -99,6 +104,7 @@ async function verify() {
 }
 async function toggle() {
   if (!bill.value || saving.value || loading.value || props.disabled) return
+  if (!bill.value.is_valid && !canRestore.value) return
   const target = bill.value,
     id = target.id
   const current = scope.capture()
@@ -107,7 +113,7 @@ async function toggle() {
   try {
     if (target.is_valid)
       await ElMessageBox.confirm(
-        `账单「${target.plan_name}」(${target.due_date}，#${id})。标记无效后不再计入统计、提醒和下一笔账单，记录会保留。`,
+        `账单「${target.plan_name}」(${target.due_date}，#${id})。标记无效后不再计入统计和下一笔账单，也不再发送账单提醒，记录会保留。规则的周期结束提醒仍按提醒设置发送。`,
         '确认标记无效',
         {
           type: 'warning',
@@ -193,10 +199,7 @@ function viewPlan() {
         }}</el-descriptions-item>
       </el-descriptions>
       <p class="hint">日期按账户时区 {{ auth.user?.timezone }} 划分。有效性不代表付款状态。</p>
-      <p
-        v-if="!bill.is_valid && bill.time_status === 'upcoming' && bill.plan_status !== 'enabled'"
-        class="hint"
-      >
+      <p v-if="!bill.is_valid && !canRestore" class="hint">
         停用规则的今天及未来账单不能恢复有效。
       </p>
       <div class="detail-actions form-actions">
@@ -209,12 +212,7 @@ function viewPlan() {
         <el-button
           :type="bill.is_valid ? 'danger' : 'success'"
           :loading="saving"
-          :disabled="
-            loading ||
-            saving ||
-            disabled ||
-            (!bill.is_valid && bill.time_status === 'upcoming' && bill.plan_status !== 'enabled')
-          "
+          :disabled="loading || saving || disabled || (!bill.is_valid && !canRestore)"
           @click="toggle"
           >{{ bill.is_valid ? '标记无效' : '恢复有效' }}</el-button
         >

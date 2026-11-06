@@ -306,8 +306,15 @@ function resize() {
   page.value = 1
   void navigate()
 }
+function canRestore(bill: BillOccurrence) {
+  return (
+    bill.can_restore ??
+    (bill.time_status === 'passed' || !bill.plan_status || bill.plan_status === 'enabled')
+  )
+}
 async function toggle(bill: BillOccurrence) {
   if (busy.value || loading.value) return
+  if (!bill.is_valid && !canRestore(bill)) return
   const current = scope.capture()
   const id = bill.id
   const wasValid = bill.is_valid
@@ -315,7 +322,7 @@ async function toggle(bill: BillOccurrence) {
   try {
     if (wasValid)
       await ElMessageBox.confirm(
-        `账单「${bill.plan_name}」(${bill.due_date}，#${id})。标记无效后将不再计入统计、提醒和下一笔账单，记录不会被删除。`,
+        `账单「${bill.plan_name}」(${bill.due_date}，#${id})。标记无效后不再计入统计和下一笔账单，也不再发送账单提醒，记录会保留。规则的周期结束提醒仍按提醒设置发送。`,
         '确认标记无效',
         { type: 'warning', confirmButtonText: '标记无效', cancelButtonText: '取消' },
       )
@@ -543,14 +550,7 @@ onMounted(() => {
               link
               :type="row.is_valid ? 'danger' : 'success'"
               :loading="actionId === row.id"
-              :disabled="
-                busy ||
-                loading ||
-                (!row.is_valid &&
-                  row.time_status === 'upcoming' &&
-                  row.plan_status &&
-                  row.plan_status !== 'enabled')
-              "
+              :disabled="busy || loading || (!row.is_valid && !canRestore(row as BillOccurrence))"
               @click="toggle(row as BillOccurrence)"
               >{{ row.is_valid ? '标记无效' : '恢复有效' }}</el-button
             ></template
@@ -581,14 +581,7 @@ onMounted(() => {
               :type="bill.is_valid ? 'danger' : 'success'"
               plain
               :loading="actionId === bill.id"
-              :disabled="
-                busy ||
-                loading ||
-                (!bill.is_valid &&
-                  bill.time_status === 'upcoming' &&
-                  !!bill.plan_status &&
-                  bill.plan_status !== 'enabled')
-              "
+              :disabled="busy || loading || (!bill.is_valid && !canRestore(bill))"
               @click="toggle(bill)"
               >{{ bill.is_valid ? '标记无效' : '恢复有效' }}</el-button
             >

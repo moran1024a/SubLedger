@@ -5,7 +5,7 @@ from datetime import time
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.models import NotificationSetting, User
+from app.models import BillPlanGroup, NotificationSetting, User
 from app.security import hash_password
 from app.services.users import utc_now
 
@@ -18,6 +18,7 @@ def ensure_bootstrap_admin(db: Session, settings: Settings) -> User:
         db.add(admin)
         db.flush()
         db.add(NotificationSetting(user_id=admin.id, advance_time=time(9, 0), same_day_time=time(8, 30), updated_at=now))
+        db.add(BillPlanGroup(user_id=admin.id, name="未分组", is_default=True))
         db.commit()
     elif admin.role != "admin" or not admin.is_active:
         admin.role = "admin"

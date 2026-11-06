@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import PlansListView from '@/views/plans/PlansListView.vue'
-import { deletePlan, disablePlan, listPlans } from '@/api/plans'
+import { deletePlan, disablePlan } from '@/api/plans'
+import { getPlanLayout } from '@/api/planGroups'
 import { ElMessageBox } from 'element-plus'
 import { ApiError, type BillPlan } from '@/types/api'
 
@@ -13,6 +14,7 @@ vi.mock('@/api/plans', () => ({
   enablePlan: vi.fn(),
   listPlans: vi.fn(),
 }))
+vi.mock('@/api/planGroups', () => ({ getPlanLayout: vi.fn() }))
 vi.mock('element-plus', async (importOriginal) => ({
   ...(await importOriginal<typeof import('element-plus')>()),
   ElMessage: { success: vi.fn(), error: vi.fn() },
@@ -43,7 +45,11 @@ beforeEach(async () => {
   await router.isReady()
   setActivePinia(createPinia())
   vi.clearAllMocks()
-  vi.mocked(listPlans).mockResolvedValue([plan])
+  vi.mocked(getPlanLayout).mockResolvedValue({
+    version: 'v1',
+    groups: [{ id: 1, name: '未分组', sort_order: 0, is_default: true }],
+    plans: [plan],
+  })
   vi.mocked(deletePlan).mockResolvedValue(undefined)
   vi.mocked(ElMessageBox.confirm).mockResolvedValue('confirm' as never)
 })
@@ -82,7 +88,7 @@ describe('PlansListView', () => {
       expect.any(Object),
     )
     expect(deletePlan).toHaveBeenCalledWith(2)
-    expect(listPlans).toHaveBeenCalledTimes(2)
+    expect(getPlanLayout).toHaveBeenCalledTimes(2)
   })
 
   it('does not delete when confirmation is cancelled', async () => {
@@ -104,7 +110,7 @@ describe('PlansListView', () => {
 
     await (wrapper.vm as unknown as { remove: (value: BillPlan) => Promise<void> }).remove(plan)
 
-    expect(listPlans).toHaveBeenCalledTimes(2)
+    expect(getPlanLayout).toHaveBeenCalledTimes(2)
   })
 
   it('uses the same disable and enable explanations as the rule detail', async () => {
@@ -113,7 +119,7 @@ describe('PlansListView', () => {
     const vm = wrapper.vm as unknown as { toggle: (value: BillPlan) => Promise<void> }
     await vm.toggle(plan)
     expect(ElMessageBox.confirm).toHaveBeenLastCalledWith(
-      expect.stringContaining('今日、本月、全年合计会同步减少'),
+      expect.stringContaining('自动移除，并按提醒设置发送周期结束提醒'),
       '确认停用账单规则',
       expect.any(Object),
     )

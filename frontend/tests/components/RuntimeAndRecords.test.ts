@@ -146,6 +146,52 @@ describe('admin home timezone and task results', () => {
 })
 
 describe('notification records queries', () => {
+  it('renders cancelled endings without a retry time and restores their status filter', async () => {
+    vi.mocked(listNotificationRecords).mockResolvedValue({
+      items: [
+        {
+          id: 1,
+          plan_id: 2,
+          plan_name: '云服务',
+          due_date: '2026-11-10',
+          channel: 'email',
+          reminder_type: 'end_advance',
+          status: 'cancelled',
+          scheduled_at: '2026-11-07T09:00:00Z',
+          sent_at: null,
+          attempt_count: 1,
+          last_attempt_at: '2026-11-07T09:00:00Z',
+          next_retry_at: null,
+          error_code: 'NETWORK_ERROR',
+          error_message: '无法连接通知渠道',
+        },
+      ],
+      total: 1,
+      page: 1,
+      page_size: 20,
+    })
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/settings/notifications', component: { template: '<div />' } }],
+    })
+    await router.push('/settings/notifications?tab=records&status=cancelled')
+    const wrapper = mount(NotificationRecords, {
+      global: {
+        plugins: [createPinia(), router],
+        stubs: { 'el-card': { template: '<div><slot /></div>' } },
+      },
+    })
+    await flushPromises()
+    expect(listNotificationRecords).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'cancelled' }),
+      expect.any(AbortSignal),
+    )
+    expect(wrapper.find('.mobile-records').text()).toContain('已取消')
+    expect(wrapper.find('.mobile-records').text()).toContain('下次重试：—')
+    expect(wrapper.findComponent(StatusTag).props('tone')).toBe('info')
+    wrapper.unmount()
+  })
+
   it('cancels stale queries and uses submitted filters when paging', async () => {
     vi.mocked(listNotificationRecords).mockResolvedValue({
       items: [],

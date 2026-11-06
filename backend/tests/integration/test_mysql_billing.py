@@ -353,7 +353,7 @@ def test_016_migration_preserves_attempts_and_sent_records(mysql_sessions):
         assert [(r.status, r.attempt_count) for r in records] == [('sent', 3), ('retry_wait', 1), ('unknown', 1), ('failed', 3)]
         assert all(r.last_attempt_at is None for r in records)
         assert records[1].next_retry_at == NOW
-        assert db.scalar(text('SELECT version_num FROM alembic_version')) == '0004_general_cycles'
+        assert db.scalar(text('SELECT version_num FROM alembic_version')) == '0006_plan_endings'
 
 
 def test_016_dns_preparation_does_not_hold_user_lock(mysql_sessions, monkeypatch, tmp_path):
@@ -520,3 +520,257 @@ def test_017_draft_test_holds_no_user_lock_and_rejects_concurrent_change(mysql_s
         with pytest.raises(AppError) as caught:
             future.result(timeout=5)
         assert caught.value.code == 'NOTIFICATION_SETTINGS_CHANGED'
+
+
+def seed_groups(factory):
+    from app.models import BillPlanGroup
+    plan_id, _ = seed(factory, with_bill=True)
+    with factory() as db:
+        db.add_all([
+            BillPlanGroup(id=1, user_id=1, name='未分组', is_default=True),
+            BillPlanGroup(id=2, user_id=1, name='服务', sort_order=1),
+        ])
+        db.commit()
+    return plan_id
+
+
+def group_order(version, plan_id, *, grouped):
+    from app.schemas import PlanLayoutWrite
+    return PlanLayoutWrite(version=version, groups=[
+        {'id': 1, 'plan_ids': [] if grouped else [plan_id]},
+        {'id': 2, 'plan_ids': [plan_id] if grouped else []},
+    ])
+
+
+def test_layout_current_read_reverts_group_despite_old_authentication_snapshot(mysql_sessions):
+    from app.services.plan_groups import layout_snapshot, save_layout
+    plan_id = seed_groups(mysql_sessions)
+    with mysql_sessions() as stale:
+        plan = establish_request_snapshot(stale, plan_id)
+        assert plan.group_id is None
+        with mysql_sessions() as other:
+            version = layout_snapshot(other, 1)['version']
+            saved = save_layout(other, 1, group_order(version, plan_id, grouped=True))
+            other.commit()
+        result = save_layout(stale, 1, group_order(saved['version'], plan_id, grouped=False))
+        stale.commit()
+        assert result['plans'][0]['group_id'] is None
+    with mysql_sessions() as db:
+        assert db.get(BillPlan, plan_id).group_id is None
+        assert db.scalar(select(func.count(BillOccurrence.id))) == 1
+
+
+def test_parallel_layout_save_rejects_stale_writer(mysql_sessions):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from app.errors import AppError
+    from app.services.plan_groups import layout_snapshot, save_layout
+    plan_id = seed_groups(mysql_sessions)
+    with mysql_sessions() as db:
+        version = layout_snapshot(db, 1)['version']
+    started = Event()
+
+    def second_save():
+        with mysql_sessions() as db:
+            establish_request_snapshot(db, plan_id)
+            started.set()
+            with pytest.raises(AppError) as caught:
+                save_layout(db, 1, group_order(version, plan_id, grouped=False))
+            assert caught.value.code == 'BILL_LAYOUT_CHANGED'
+
+    with mysql_sessions() as first, ThreadPoolExecutor(max_workers=1) as pool:
+        save_layout(first, 1, group_order(version, plan_id, grouped=True))
+        second = pool.submit(second_save)
+        assert started.wait(5)
+        first.commit()
+        second.result(timeout=10)
+    with mysql_sessions() as db:
+        assert db.get(BillPlan, plan_id).group_id == 2
+
+
+def test_group_migration_preserves_old_order_per_user(mysql_sessions):
+    from pathlib import Path
+    from alembic import command
+    from alembic.config import Config
+    from app.models import BillPlanGroup
+    from app.services.plan_groups import layout_snapshot
+    engine = mysql_sessions.kw['bind']
+    Base.metadata.drop_all(engine)
+    config = Config(str(Path(__file__).resolve().parents[2] / 'alembic.ini'))
+    with engine.begin() as connection:
+        config.attributes['connection'] = connection
+        command.upgrade(config, '0004_general_cycles')
+    with mysql_sessions() as db:
+        for user_id in (1, 2):
+            db.add(User(id=user_id, username=f'user{user_id}', password_hash='unused', role='user', is_active=True, timezone='UTC', currency_code='CNY', created_at=NOW, updated_at=NOW))
+        db.flush()
+        for plan_id, user_id in ((1, 1), (2, 2), (3, 1), (4, 2)):
+            db.execute(text("INSERT INTO bill_plans (id,user_id,name,amount,cycle_type,cycle_interval,first_due_date,is_enabled,created_at,updated_at) VALUES (:id,:uid,'migration',1,'month',1,:today,1,:now,:now)"), {'id': plan_id, 'uid': user_id, 'today': TODAY, 'now': NOW})
+        db.commit()
+    with engine.begin() as connection:
+        config.attributes['connection'] = connection
+        command.upgrade(config, 'head')
+        command.upgrade(config, 'head')
+    with mysql_sessions() as db:
+        assert [(g.user_id, g.name, g.is_default) for g in db.scalars(select(BillPlanGroup).order_by(BillPlanGroup.user_id))] == [(1, '未分组', True), (2, '未分组', True)]
+        assert [p['id'] for p in layout_snapshot(db, 1)['plans']] == [3, 1]
+        assert [p['id'] for p in layout_snapshot(db, 2)['plans']] == [4, 2]
+        assert all(p.group_id is None and p.amount == Decimal('1.00') and p.first_due_date == TODAY for p in db.scalars(select(BillPlan)))
+
+
+def test_expiration_rechecks_concurrent_reenable_and_rejects_late_edits(mysql_sessions, monkeypatch):
+    from app.errors import AppError
+    from app.services import plan_lifecycle
+    plan_id, bill_id = seed(mysql_sessions, enabled=False, with_bill=True)
+    monkeypatch.setattr(plan_lifecycle, 'utc_now', lambda: NOW)
+    with mysql_sessions() as db:
+        db.get(BillPlan, plan_id).end_date = TODAY
+        db.commit()
+    with mysql_sessions() as stale:
+        establish_request_snapshot(stale, plan_id)
+        with mysql_sessions() as other:
+            enable_plan(other, other.get(BillPlan, plan_id), TODAY)
+            other.commit()
+        assert plan_lifecycle.finish_plan(stale, 1, plan_id) is None
+        stale.commit()
+    with mysql_sessions() as db:
+        disable_plan(db, db.get(BillPlan, plan_id), TODAY)
+        db.commit()
+    with mysql_sessions() as stale:
+        plan = establish_request_snapshot(stale, plan_id)
+        with mysql_sessions() as other:
+            assert plan_lifecycle.finish_plan(other, 1, plan_id) == 'ended'
+            other.commit()
+        with pytest.raises(AppError) as exc:
+            enable_plan(stale, plan, TODAY)
+        assert exc.value.code == 'BILL_PLAN_NOT_FOUND'
+    with mysql_sessions() as db:
+        assert db.get(BillOccurrence, bill_id) is not None
+
+
+def test_expiration_invalidates_layout_version(mysql_sessions, monkeypatch):
+    from app.errors import AppError
+    from app.services import plan_lifecycle
+    from app.services.plan_groups import layout_snapshot, save_layout
+    plan_id = seed_groups(mysql_sessions)
+    monkeypatch.setattr(plan_lifecycle, 'utc_now', lambda: NOW)
+    with mysql_sessions() as db:
+        disable_plan(db, db.get(BillPlan, plan_id), TODAY)
+        version = layout_snapshot(db, 1)['version']
+        db.commit()
+    with mysql_sessions() as stale:
+        establish_request_snapshot(stale, plan_id)
+        with mysql_sessions() as other:
+            assert plan_lifecycle.finish_plan(other, 1, plan_id) == 'ended'
+            other.commit()
+        with pytest.raises(AppError) as exc:
+            save_layout(stale, 1, group_order(version, plan_id, grouped=True))
+        assert exc.value.code == 'BILL_LAYOUT_CHANGED'
+
+
+def test_end_notification_can_complete_after_expiration_during_dns(mysql_sessions, monkeypatch, tmp_path):
+    from app.services import plan_lifecycle
+    plan_id, bill_id = seed(mysql_sessions, enabled=False, with_bill=True)
+    monkeypatch.setattr(plan_lifecycle, 'utc_now', lambda: NOW)
+    monkeypatch.setattr(notifications, 'utc_now', lambda: NOW.replace(hour=12))
+    with mysql_sessions() as db:
+        db.get(BillPlan, plan_id).end_date = TODAY
+        db.commit()
+    def prepare(*args):
+        with mysql_sessions() as db:
+            assert plan_lifecycle.finish_plan(db, 1, plan_id) == 'ended'
+            db.commit()
+        return ('smtp.test', [])
+    monkeypatch.setattr(notifications, '_prepare_delivery', prepare)
+    sent = []
+    monkeypatch.setattr(notifications, '_send_email', lambda *args: sent.append(args[3]))
+    with mysql_sessions() as stale:
+        plan = establish_request_snapshot(stale, plan_id)
+        result = notifications._attempt_notification(stale,
+            SimpleNamespace(logging=SimpleNamespace(directory=str(tmp_path))), None,
+            plan, TODAY, 'email', 'end_same_day', NOW)
+        stale.commit()
+        assert result == 'sent'
+    assert len(sent) == 1 and '周期' in sent[0]
+    with mysql_sessions() as db:
+        assert db.get(BillOccurrence, bill_id) is not None
+        assert db.scalar(select(NotificationRecord)).status == 'sent'
+
+
+def test_ending_migration_preserves_records_and_backfills_once_dates(mysql_sessions, monkeypatch, tmp_path):
+    from pathlib import Path
+    from alembic import command
+    from alembic.config import Config
+    from app.services import plan_lifecycle
+    engine = mysql_sessions.kw['bind']
+    Base.metadata.drop_all(engine)
+    config = Config(str(Path(__file__).resolve().parents[2] / 'alembic.ini'))
+    with engine.begin() as connection:
+        config.attributes['connection'] = connection
+        command.upgrade(config, '0005_plan_groups')
+        connection.execute(text("INSERT INTO users (id,username,password_hash,role,is_active,timezone,currency_code,created_at,updated_at) VALUES (1,'migration','hash','user',1,'UTC','CNY',:now,:now)"), {'now': NOW})
+        for pid, kind, enabled, deleted in [(1,'once',True,None), (2,'month',False,None), (3,'once',False,NOW), (4,'month',True,None)]:
+            connection.execute(text("INSERT INTO bill_plans (id,user_id,name,amount,cycle_type,cycle_interval,first_due_date,is_enabled,deleted_at,created_at,updated_at) VALUES (:id,1,'migration',12.50,:kind,1,:today,:enabled,:deleted,:now,:now)"), dict(id=pid,kind=kind,enabled=enabled,deleted=deleted,today=TODAY,now=NOW))
+        connection.execute(text("INSERT INTO bill_occurrences (id,user_id,plan_id,due_date,amount_snapshot,is_valid,invalidated_by_plan_disable,created_at,updated_at) VALUES (1,1,1,:today,12.50,1,0,:now,:now)"), {'today':TODAY,'now':NOW})
+        connection.execute(text("INSERT INTO notification_records (user_id,plan_id,bill_id,due_date,channel,reminder_type,status,scheduled_at,retry_count) VALUES (1,1,1,:today,'email','same_day','sent',:now,0)"), {'today':TODAY,'now':NOW})
+    with engine.begin() as connection:
+        config.attributes['connection'] = connection
+        command.upgrade(config, 'head')
+        command.upgrade(config, 'head')
+    with mysql_sessions() as db:
+        plans = list(db.scalars(select(BillPlan).order_by(BillPlan.id)))
+        assert [p.end_date for p in plans] == [TODAY,None,None,None]
+        assert all(p.ended_at is None for p in plans)
+    monkeypatch.setattr(plan_lifecycle, 'utc_now', lambda: NOW)
+    result = plan_lifecycle.finish_ended_plans(SimpleNamespace(session=mysql_sessions), SimpleNamespace(logging=SimpleNamespace(directory=str(tmp_path))))
+    assert result == {'ended':2,'initialized':0,'errors':0}
+    with mysql_sessions() as db:
+        assert db.get(BillOccurrence, 1).is_valid
+        assert db.scalar(select(NotificationRecord)).status == 'sent'
+        assert db.get(BillPlan, 3).ended_at is None
+        assert db.get(BillPlan, 4).deleted_at is None
+
+
+def test_legacy_once_retry_rechecks_backoff_and_preserves_id(mysql_sessions, monkeypatch, tmp_path):
+    from datetime import timedelta
+    plan_id, _ = seed(mysql_sessions, with_bill=True)
+    current = NOW.replace(hour=12)
+    monkeypatch.setattr(notifications, 'utc_now', lambda: current)
+    monkeypatch.setattr(notifications, '_prepare_delivery', lambda *args: ('smtp.test', []))
+    sent = []
+    monkeypatch.setattr(notifications, '_send_email', lambda *args: sent.append(args[3]))
+    settings = SimpleNamespace(logging=SimpleNamespace(directory=str(tmp_path)))
+    with mysql_sessions() as db:
+        plan = db.get(BillPlan, plan_id)
+        plan.cycle_type, plan.cycle_interval, plan.end_date = 'once', 1, TODAY
+        record = NotificationRecord(user_id=1, plan_id=plan_id, due_date=TODAY, channel='email',
+                                    reminder_type='same_day', status='retry_wait', scheduled_at=NOW,
+                                    attempt_count=1, retry_count=1, next_retry_at=current)
+        db.add(record)
+        db.commit()
+        record_id = record.id
+    with mysql_sessions() as stale:
+        plan = establish_request_snapshot(stale, plan_id)
+        stale.get(NotificationRecord, record_id)
+        with mysql_sessions() as other:
+            record = other.get(NotificationRecord, record_id)
+            record.attempt_count = record.retry_count = 2
+            record.next_retry_at = current + timedelta(minutes=5)
+            other.commit()
+        assert notifications._attempt_notification(
+            stale, settings, None, plan, TODAY, 'email', 'end_same_day', NOW) is None
+        stale.commit()
+    assert not sent
+    current += timedelta(minutes=5)
+    with mysql_sessions() as db:
+        assert notifications._attempt_notification(
+            db, settings, None, db.get(BillPlan, plan_id), TODAY,
+            'email', 'end_same_day', NOW) == 'sent'
+        db.commit()
+    with mysql_sessions() as db:
+        record = db.get(NotificationRecord, record_id)
+        assert record.status == 'sent'
+        assert record.attempt_count == 3
+        assert record.reminder_type == 'end_same_day'
+        assert db.scalar(select(func.count(NotificationRecord.id))) == 1
+    assert len(sent) == 1

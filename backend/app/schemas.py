@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
@@ -100,6 +100,7 @@ CycleType = Literal["once", "day", "week", "month", "year", "monthly", "quarterl
 
 
 class BillPlanCreate(BaseModel):
+    group_id: int | None = Field(default=None, gt=0, strict=True)
     name: str = Field(min_length=1, max_length=128)
     amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
     first_due_date: date
@@ -121,6 +122,7 @@ class BillPlanCreate(BaseModel):
 
 
 class BillPlanPatch(BaseModel):
+    group_id: int | None = Field(default=None, gt=0, strict=True)
     name: str | None = Field(default=None, min_length=1, max_length=128)
     amount: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
     first_due_date: date | None = None
@@ -151,6 +153,8 @@ class BillPlanPatch(BaseModel):
 
 class BillPlanResponse(BaseModel):
     id: int
+    group_id: int | None = None
+    sort_order: int = 0
     future_bills_rebuilt: bool = False
     name: str
     amount: str
@@ -159,6 +163,7 @@ class BillPlanResponse(BaseModel):
     cycle_interval: int
     cycle_days: int | None
     is_enabled: bool
+    end_date: date | None = None
     note: str | None
     created_at: datetime
     updated_at: datetime
@@ -168,6 +173,45 @@ class BillPlanResponse(BaseModel):
         return _serialize_utc(value)
 
 
+class BillPlanGroupResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    sort_order: int
+    is_default: bool
+
+
+class PlanLayoutResponse(BaseModel):
+    version: str
+    groups: list[BillPlanGroupResponse]
+    plans: list[BillPlanResponse]
+
+
+class PlanLayoutVersion(BaseModel):
+    version: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class PlanGroupWrite(PlanLayoutVersion):
+    name: str = Field(min_length=1, max_length=64)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError("group name must not be blank")
+        return value
+
+
+class PlanGroupOrder(BaseModel):
+    id: int = Field(gt=0, strict=True)
+    plan_ids: list[Annotated[int, Field(gt=0, strict=True)]] = Field(default_factory=list)
+
+
+class PlanLayoutWrite(PlanLayoutVersion):
+    groups: list[PlanGroupOrder]
+
+
 class BillOccurrenceResponse(BaseModel):
     id: int
     plan_id: int
@@ -175,6 +219,7 @@ class BillOccurrenceResponse(BaseModel):
     due_date: date
     amount: str
     is_valid: bool
+    can_restore: bool
     time_status: Literal["upcoming", "passed"]
     cycle_type: CycleType
     cycle_interval: int
@@ -187,6 +232,34 @@ class BillOccurrencePage(BaseModel):
     page: int
     page_size: int
     total: int
+
+
+class CalendarBill(BaseModel):
+    bill_id: int | None
+    plan_id: int
+    plan_name: str
+    amount: str
+    cycle_type: CycleType
+    cycle_interval: int
+    plan_status: Literal["enabled", "disabled", "deleted"]
+    is_estimated: bool
+
+
+class CalendarDay(BaseModel):
+    date: date
+    count: int
+    amount: str
+    estimated_count: int
+    bills: list[CalendarBill]
+
+
+class BillCalendarResponse(BaseModel):
+    month: str
+    today: date
+    count: int
+    amount: str
+    estimated_count: int
+    days: list[CalendarDay]
 
 
 class ValidityPatch(BaseModel):
@@ -309,8 +382,8 @@ class NotificationRecordResponse(BaseModel):
     plan_name: str
     due_date: date
     channel: Literal['email', 'feishu']
-    reminder_type: Literal['advance', 'same_day']
-    status: Literal['pending', 'retry_wait', 'sent', 'failed', 'unknown', 'expired']
+    reminder_type: Literal['advance', 'same_day', 'end_advance', 'end_same_day']
+    status: Literal['pending', 'retry_wait', 'sent', 'failed', 'unknown', 'expired', 'cancelled']
     scheduled_at: datetime
     sent_at: datetime | None
     attempt_count: int

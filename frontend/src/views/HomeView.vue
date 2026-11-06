@@ -19,6 +19,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingBlock from '@/components/common/LoadingBlock.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
 import BillDetailDrawer from '@/components/billing/BillDetailDrawer.vue'
+import BillCalendar from '@/components/billing/BillCalendar.vue'
 import OperationFeedback from '@/components/common/OperationFeedback.vue'
 import NavIcon from '@/components/common/NavIcon.vue'
 import DateBadge from '@/components/common/DateBadge.vue'
@@ -36,6 +37,7 @@ const queries = useQueryRequest(),
 const { billId, invalidBillId, openBill, closeBill } = useBillDrawer()
 const drawerBusy = ref(false)
 const refreshKey = ref(0)
+const calendarRefreshKey = ref(0)
 const money = (value: string) => formatMoney(value, auth.user?.currency_code)
 async function load() {
   const signal = queries.next()
@@ -71,13 +73,13 @@ async function loadBills() {
   }
 }
 function refresh() {
+  calendarRefreshKey.value += 1
   void load()
   void loadBills()
 }
 // Count-up only plays when statistics first arrive; later refreshes replace the numbers.
 const todayAmount = useCountUp(computed(() => data.value?.today.amount ?? null))
 const monthAmount = useCountUp(computed(() => data.value?.current_month.amount ?? null))
-const yearAmount = useCountUp(computed(() => data.value?.current_year.amount ?? null))
 const metrics = computed(() =>
   data.value
     ? [
@@ -94,13 +96,6 @@ const metrics = computed(() =>
           icon: 'bills',
           amount: monthAmount.value,
           count: `${data.value.current_month.count} 笔（含未来推算）`,
-        },
-        {
-          key: 'year',
-          title: '全年预计',
-          icon: 'logs',
-          amount: yearAmount.value,
-          count: `${data.value.current_year.count} 笔（含未来推算）`,
         },
       ]
     : [],
@@ -148,7 +143,10 @@ function viewPeriod(kind: string) {
     },
   })
 }
-onMounted(refresh)
+onMounted(() => {
+  void load()
+  void loadBills()
+})
 </script>
 <template>
   <div class="page-container">
@@ -192,6 +190,25 @@ onMounted(refresh)
               >查看已生成账单</el-button
             >
           </div></el-card
+        ><el-card class="metric-card averages-card" :style="{ '--i': 2 }">
+          <div class="metric-head">
+            <span class="metric-icon"><NavIcon name="logs" /></span>
+            <span class="metric-label">折算均值</span>
+          </div>
+          <dl class="average-values">
+            <div>
+              <dt>月均</dt>
+              <dd class="tabular-nums">{{ money(data.averages.monthly) }}</dd>
+            </div>
+            <div>
+              <dt>日均</dt>
+              <dd class="tabular-nums">{{ money(data.averages.daily) }}</dd>
+            </div>
+            <div>
+              <dt>年均</dt>
+              <dd class="tabular-nums">{{ money(data.averages.yearly) }}</dd>
+            </div>
+          </dl> </el-card
         ><el-card
           class="metric-card next-card"
           :class="{ 'sl-lift': nextBill?.bill_id != null }"
@@ -222,22 +239,8 @@ onMounted(refresh)
           </template></el-card
         >
       </div>
-      <el-card class="content-card"
-        ><div class="average-row">
-          <span class="stat-chip"
-            >折算月均<strong class="tabular-nums">{{ money(data.averages.monthly) }}</strong></span
-          ><span class="stat-chip"
-            >折算日均<strong class="tabular-nums">{{ money(data.averages.daily) }}</strong></span
-          >
-        </div>
-        <details>
-          <summary>统计口径说明</summary>
-          <p>
-            预计金额包含已生成的有效账单和未来按规则推算的金额，可能不同于明细合计；月均、日均按启用的周期规则折算，排除单次账单。所有金额均不代表付款状态。
-          </p>
-        </details></el-card
-      >
     </template>
+    <BillCalendar :refresh-key="calendarRefreshKey" :disabled="drawerBusy" @open-bill="openBill" />
     <el-card class="content-card"
       ><template #header
         ><div class="next-content">
@@ -410,38 +413,35 @@ onMounted(refresh)
   min-width: 0;
 }
 .upcoming-row p,
-.muted,
-details {
+.muted {
   color: var(--sl-text-muted);
   font-size: var(--sl-font-size-sm);
 }
 .upcoming-row p {
   margin: 4px 0 0;
 }
-.average-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sl-space-3);
-  margin-bottom: var(--sl-space-3);
+.average-values {
+  margin: var(--sl-space-3) 0 0;
 }
-.stat-chip {
-  display: inline-flex;
+.average-values > div {
+  display: flex;
   align-items: baseline;
+  justify-content: space-between;
   gap: var(--sl-space-2);
-  padding: 6px var(--sl-space-3);
-  border-radius: 999px;
-  background: var(--sl-surface-muted);
-  border: 1px solid var(--sl-border);
+  padding: 6px 0;
+}
+.average-values dt {
+  flex-shrink: 0;
   color: var(--sl-text-secondary);
   font-size: var(--sl-font-size-sm);
 }
-.stat-chip strong {
+.average-values dd {
+  margin: 0;
   color: var(--sl-text);
-  font-size: var(--sl-font-size);
+  font-size: var(--sl-font-size-lg);
   font-weight: 600;
-}
-summary {
-  cursor: pointer;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 .next-content {
   display: flex;

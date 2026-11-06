@@ -17,6 +17,8 @@ export interface CurrentUser {
 
 export interface BillPlan {
   id: number
+  group_id?: number | null
+  sort_order?: number
   future_bills_rebuilt: boolean
   name: string
   amount: MoneyString
@@ -25,12 +27,14 @@ export interface BillPlan {
   cycle_interval?: number
   cycle_days: number | null
   is_enabled: boolean
+  end_date?: string | null
   note: string | null
   created_at: string
   updated_at: string
 }
 
 export interface BillPlanPayload {
+  group_id?: number | null
   name: string
   amount: string
   first_due_date: string
@@ -42,8 +46,27 @@ export interface BillPlanPayload {
 
 export type BillPlanPatch = Partial<BillPlanPayload>
 
+export interface BillPlanGroup {
+  id: number
+  name: string
+  sort_order: number
+  is_default: boolean
+}
+
+export interface PlanLayout {
+  version: string
+  groups: BillPlanGroup[]
+  plans: BillPlan[]
+}
+
+export interface PlanLayoutOrder {
+  version: string
+  groups: { id: number; plan_ids: number[] }[]
+}
+
 export interface BillOccurrence {
   plan_status?: 'enabled' | 'disabled' | 'deleted'
+  can_restore?: boolean
   id: number
   plan_id: number
   plan_name: string
@@ -63,6 +86,34 @@ export interface BillOccurrencePage {
   total: number
 }
 
+export interface CalendarBill {
+  bill_id: number | null
+  plan_id: number
+  plan_name: string
+  amount: MoneyString
+  cycle_type: CycleType
+  cycle_interval: number
+  plan_status: 'enabled' | 'disabled' | 'deleted'
+  is_estimated: boolean
+}
+
+export interface CalendarDay {
+  date: string
+  count: number
+  amount: MoneyString
+  estimated_count: number
+  bills: CalendarBill[]
+}
+
+export interface BillCalendarResponse {
+  month: string
+  today: string
+  count: number
+  amount: MoneyString
+  estimated_count: number
+  days: CalendarDay[]
+}
+
 export interface StatisticsBucket {
   amount: MoneyString
   count: number
@@ -72,7 +123,7 @@ export interface StatisticsResponse {
   date: string
   today: StatisticsBucket
   current_month: StatisticsBucket
-  averages: { monthly: MoneyString; daily: MoneyString }
+  averages: { monthly: MoneyString; daily: MoneyString; yearly: MoneyString }
   current_year: StatisticsBucket
   next_bill: {
     bill_id: number | null
@@ -208,14 +259,14 @@ export interface RuntimeResponse {
   tasks: RuntimeTask[]
 }
 export type NotificationStatus =
-  'pending' | 'retry_wait' | 'sent' | 'failed' | 'unknown' | 'expired'
+  'pending' | 'retry_wait' | 'sent' | 'failed' | 'unknown' | 'expired' | 'cancelled'
 export interface NotificationRecord {
   id: number
   plan_id: number
   plan_name: string
   due_date: string
   channel: 'email' | 'feishu'
-  reminder_type: 'advance' | 'same_day'
+  reminder_type: 'advance' | 'same_day' | 'end_advance' | 'end_same_day'
   status: NotificationStatus
   scheduled_at: string
   sent_at: string | null

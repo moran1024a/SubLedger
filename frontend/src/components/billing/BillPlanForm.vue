@@ -19,7 +19,7 @@ import {
   ElSelect,
 } from 'element-plus'
 import { computed, nextTick, reactive, ref, watch } from 'vue'
-import type { BillPlan, BillPlanPayload } from '@/types/api'
+import type { BillPlan, BillPlanPayload, BillPlanGroup } from '@/types/api'
 import { isValidAmount } from '@/utils/validation'
 import { cycleParts, cycleLimits, formatCycle } from '@/utils/format'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
@@ -31,8 +31,11 @@ const props = defineProps<{
   plan?: BillPlan | null
   submitting?: boolean
   fieldErrors?: Record<string, string>
+  groups?: BillPlanGroup[]
+  groupsLoading?: boolean
+  groupsError?: boolean
 }>()
-const emit = defineEmits<{ submit: [payload: BillPlanPayload]; cancel: [] }>()
+const emit = defineEmits<{ submit: [payload: BillPlanPayload]; cancel: []; reloadGroups: [] }>()
 const formRef = ref()
 const auth = useAuthStore()
 // Today in the account timezone; dateShortcut falls back to the browser zone when unsupported.
@@ -44,6 +47,7 @@ const todayValue = computed(() => {
 const validating = ref(false)
 const scope = useViewScope(() => props.plan?.id)
 const form = reactive<BillPlanPayload>({
+  group_id: null,
   name: '',
   amount: '',
   first_due_date: '',
@@ -97,6 +101,7 @@ watch(
   (plan) => {
     if (plan)
       Object.assign(form, {
+        group_id: plan.group_id ?? null,
         name: plan.name,
         amount: plan.amount,
         first_due_date: plan.first_due_date,
@@ -166,6 +171,9 @@ async function submit() {
     if (!current() || props.submitting) return
     emit('submit', {
       ...form,
+      // Preserve a move made in another tab unless this form changes the group.
+      group_id:
+        props.plan && form.group_id === (props.plan.group_id ?? null) ? undefined : form.group_id,
       name: form.name.trim(),
       note: form.note?.trim() || null,
       cycle_days: null,
@@ -196,6 +204,33 @@ defineExpose({ markSaved, confirmDiscard })
     <el-form-item label="名称" prop="name" :error="fieldErrors?.name"
       ><el-input v-model="form.name" maxlength="128" show-word-limit
     /></el-form-item>
+    <el-form-item label="分组" prop="group_id" :error="fieldErrors?.group_id">
+      <el-select
+        :model-value="form.group_id ?? ''"
+        :loading="groupsLoading"
+        :disabled="groupsLoading || groupsError"
+        style="width: 100%"
+        @update:model-value="form.group_id = $event === '' ? null : Number($event)"
+      >
+        <el-option label="未分组" value="" />
+        <el-option
+          v-for="group in groups?.filter((item) => !item.is_default)"
+          :key="group.id"
+          :label="group.name"
+          :value="group.id"
+        />
+        <el-option
+          v-if="form.group_id && !groups?.some((item) => item.id === form.group_id)"
+          :label="`分组 #${form.group_id}`"
+          :value="form.group_id"
+        />
+      </el-select>
+      <p v-if="groupsError" class="form-summary">
+        分组加载失败，当前归属会保留。<el-button link @click="emit('reloadGroups')"
+          >重新加载分组</el-button
+        >
+      </p>
+    </el-form-item>
     <el-form-item label="金额" prop="amount" :error="fieldErrors?.amount"
       ><el-input
         v-model="form.amount"

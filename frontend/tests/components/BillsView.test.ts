@@ -437,9 +437,12 @@ describe('bill filter drafts and labels', () => {
     await flushPromises()
     await (wrapper.vm as unknown as { toggle: (value: typeof bill) => Promise<void> }).toggle(bill)
     expect(ElMessageBox.confirm).toHaveBeenCalledWith(
-      expect.stringContaining('不再计入统计、提醒和下一笔账单'),
+      expect.stringContaining('不再计入统计和下一笔账单'),
       '确认标记无效',
       expect.any(Object),
+    )
+    expect(vi.mocked(ElMessageBox.confirm).mock.calls[0]![0]).toContain(
+      '规则的周期结束提醒仍按提醒设置发送',
     )
   })
 })

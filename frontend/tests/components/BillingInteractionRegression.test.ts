@@ -13,6 +13,7 @@ import BillDetailDrawer from '@/components/billing/BillDetailDrawer.vue'
 import BillPlanForm from '@/components/billing/BillPlanForm.vue'
 import OperationFeedback from '@/components/common/OperationFeedback.vue'
 import { createPlan, deletePlan, disablePlan, getPlan, listPlans, updatePlan } from '@/api/plans'
+import { getPlanLayout } from '@/api/planGroups'
 import { getBill, listBills, updateBillValidity } from '@/api/bills'
 import { getSummary } from '@/api/statistics'
 import {
@@ -31,6 +32,10 @@ vi.mock('@/api/plans', () => ({
   getPlan: vi.fn(),
   listPlans: vi.fn(),
   updatePlan: vi.fn(),
+}))
+vi.mock('@/api/planGroups', () => ({
+  getPlanLayout: vi.fn(),
+  listPlanGroups: vi.fn().mockResolvedValue([]),
 }))
 vi.mock('@/api/bills', () => ({
   getBill: vi.fn(),
@@ -100,6 +105,7 @@ const stubs = {
   MoneyText: true,
   BillPlanForm: true,
   BillDetailDrawer: true,
+  BillCalendar: true,
   'el-card': { template: '<div><slot /><slot name="header" /></div>' },
   'el-table': true,
   'el-descriptions': true,
@@ -135,7 +141,7 @@ async function view(component: Component, path: string, extraStubs = {}) {
   await flushPromises()
   return { router, host, wrapper: host.findComponent(component) }
 }
-async function drawer(id = 3) {
+async function drawer(id = 3, extraStubs = {}) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [{ path: '/', component: { template: '<div />' } }],
@@ -143,7 +149,7 @@ async function drawer(id = 3) {
   await router.push('/')
   const wrapper = mount(BillDetailDrawer, {
     props: { billId: id },
-    global: { plugins: [createPinia(), router], stubs },
+    global: { plugins: [createPinia(), router], stubs: { ...stubs, ...extraStubs } },
   })
   wrappers.push(wrapper)
   await flushPromises()
@@ -155,6 +161,11 @@ beforeEach(() => {
   vi.mocked(getPlan).mockImplementation(async (id) => ({ ...plan, id }))
   vi.mocked(updatePlan).mockResolvedValue(plan)
   vi.mocked(listPlans).mockResolvedValue([{ ...plan }])
+  vi.mocked(getPlanLayout).mockResolvedValue({
+    version: 'v1',
+    groups: [{ id: 1, name: '未分组', sort_order: 0, is_default: true }],
+    plans: [{ ...plan }],
+  })
   vi.mocked(getBill).mockImplementation(async (id) => ({ ...bill, id }))
   vi.mocked(listBills).mockResolvedValue({ items: [{ ...bill }], total: 1, page: 1, page_size: 20 })
   vi.mocked(updateBillValidity).mockResolvedValue({ ...bill, is_valid: false })
@@ -163,6 +174,47 @@ beforeEach(() => {
 })
 afterEach(() => {
   wrappers.splice(0).forEach((wrapper) => wrapper.unmount())
+})
+
+describe('bill restoration after automatic completion', () => {
+  it.each([true, false])(
+    'uses server restoration permission (%s) in the drawer and list',
+    async (allowed) => {
+      const invalid: BillOccurrence = {
+        ...bill,
+        cycle_type: 'once',
+        plan_status: 'deleted',
+        is_valid: false,
+        can_restore: allowed,
+      }
+      vi.mocked(getBill).mockResolvedValue(invalid)
+      vi.mocked(listBills).mockResolvedValue({ items: [invalid], total: 1, page: 1, page_size: 20 })
+      vi.mocked(updateBillValidity).mockResolvedValue({ ...invalid, is_valid: true })
+      const detail = await drawer(3, { 'el-button': false })
+      const { wrapper: list } = await view(BillsView, '/bills', { 'el-button': false })
+      for (const component of [detail, list]) {
+        const restore = component.findAll('button').find((button) => button.text() === '恢复有效')!
+        expect(restore.exists()).toBe(true)
+        expect((restore.element as HTMLButtonElement).disabled).toBe(!allowed)
+        await restore.trigger('click')
+        await flushPromises()
+      }
+      expect(updateBillValidity).toHaveBeenCalledTimes(allowed ? 2 : 0)
+      if (allowed) expect(updateBillValidity).toHaveBeenLastCalledWith(bill.id, true)
+    },
+  )
+
+  it('explains that invalidating a bill leaves cycle-ending reminders enabled', async () => {
+    const detail = await drawer(3, { 'el-button': false })
+    await detail
+      .findAll('button')
+      .find((button) => button.text() === '标记无效')!
+      .trigger('click')
+    await flushPromises()
+    expect(vi.mocked(ElMessageBox.confirm).mock.calls[0]![0]).toContain(
+      '规则的周期结束提醒仍按提醒设置发送',
+    )
+  })
 })
 
 describe('billing writes remain scoped to their resource', () => {
@@ -383,7 +435,7 @@ describe('billing verification and synchronization', () => {
         today: { count: 1, amount: '12.50' },
         current_month: { count: 1, amount: '12.50' },
         current_year: { count: 1, amount: '12.50' },
-        averages: { monthly: '12.50', daily: '0.41' },
+        averages: { monthly: '12.50', daily: '0.41', yearly: '150.00' },
         next_bill: null,
       }
       vi.mocked(getSummary).mockResolvedValue(summary)

@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.api import auth, bills, logs, notification_records, notifications, plans, runtime, statistics, users
+from app.api import auth, bills, logs, notification_records, notifications, plan_groups, plans, runtime, statistics, users
 from app.bootstrap import ensure_bootstrap_admin
 from app.config import ConfigError, load_settings
 from app.database import Database
@@ -41,7 +41,7 @@ def create_app(settings=None) -> FastAPI:
             database.dispose()
             write_system_log(settings, level="INFO", module="system", event="application_stopped", request_id=None, message="应用已停止")
 
-    app = FastAPI(title="SubLedger", version="0.1.9", lifespan=lifespan)
+    app = FastAPI(title="SubLedger", version="0.1.10", lifespan=lifespan)
     app.state.settings = settings
     app.state.database = database
     app.state.fernet = fernet
@@ -55,6 +55,7 @@ def create_app(settings=None) -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(users.router)
+    app.include_router(plan_groups.router)
     app.include_router(plans.router)
     app.include_router(bills.router)
     app.include_router(statistics.router)

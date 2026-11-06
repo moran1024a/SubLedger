@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_current_user, get_db
 from app.errors import AppError
 from app.models import BillOccurrence, BillPlan, User
-from app.schemas import BillOccurrencePage, BillOccurrenceResponse, ValidityPatch
-from app.services.billing import local_today, occurrence_response
+from app.schemas import BillCalendarResponse, BillOccurrencePage, BillOccurrenceResponse, ValidityPatch
+from app.services.bill_calendar import calendar_month
+from app.services.billing import can_restore_occurrence, local_today, occurrence_response
 from app.services.logging import write_user_log
 from app.services.users import utc_now
 
@@ -113,6 +114,15 @@ def list_bills(
     }
 
 
+@router.get("/calendar", response_model=BillCalendarResponse)
+def get_calendar(
+    month: str | None = Query(default=None, pattern=r"^[1-9]\d{3}-(0[1-9]|1[0-2])$"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return calendar_month(db, user, month)
+
+
 @router.get("/{bill_id}", response_model=BillOccurrenceResponse)
 def get_bill(bill_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     occurrence, plan = _owned_bill(db, user.id, bill_id)
@@ -122,11 +132,7 @@ def get_bill(bill_id: int, user: User = Depends(get_current_user), db: Session =
 @router.patch("/{bill_id}/validity", response_model=BillOccurrenceResponse)
 def set_validity(bill_id: int, payload: ValidityPatch, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     occurrence, plan = _locked_owned_bill(db, user.id, bill_id)
-    if (
-        payload.is_valid
-        and not plan.is_enabled
-        and occurrence.due_date >= local_today(user.timezone)
-    ):
+    if payload.is_valid and not can_restore_occurrence(occurrence, plan, local_today(user.timezone)):
         raise AppError(
             "BILL_PLAN_DISABLED",
             "停用规则的当前及未来账单不能恢复有效",

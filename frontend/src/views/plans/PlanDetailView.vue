@@ -36,11 +36,19 @@ import MoneyText from '@/components/common/MoneyText.vue'
 import { useAuthStore } from '@/stores/auth'
 import { cycleParts, formatCycle, formatDateTime, normalizeAmount } from '@/utils/format'
 import { positiveId } from '@/utils/billFilters'
+import { usePlanGroups } from '@/composables/usePlanGroups'
 import { asApiError, getFieldErrors, isUncertainWrite, writeErrorMessage } from '@/utils/apiErrors'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const { groups, loading: groupsLoading, error: groupsError, reload: reloadGroups } = usePlanGroups()
+const groupName = computed(() =>
+  !plan.value?.group_id
+    ? '未分组'
+    : (groups.value.find((group) => group.id === plan.value?.group_id)?.name ??
+      `分组 #${plan.value?.group_id}`),
+)
 const returnTo = computed(() => returnPath(route.query.return_to))
 const operationMessage = ref('')
 const plan = ref<BillPlan | null>(null)
@@ -166,13 +174,13 @@ async function toggle() {
   try {
     if (wasEnabled)
       await ElMessageBox.confirm(
-        `规则「${plan.value.name}」(#${targetId})。停用后不再生成新账单，当前未过账单将失效，不再参与月均和日均统计，也不再发送提醒；今日、本月、全年合计会同步减少。历史账单会保留。`,
+        `规则「${plan.value.name}」(#${targetId})。停用后不再生成新账单，今日及未来账单将失效，不再计入折算均值。规则会在下一个付款日（单次规则为账单日期）自动移除，并按提醒设置发送周期结束提醒。历史账单会保留。`,
         '确认停用',
         { type: 'warning', confirmButtonText: '停用', cancelButtonText: '取消' },
       )
     else
       await ElMessageBox.confirm(
-        `规则「${plan.value.name}」(#${targetId})。启用后会恢复因停用而失效的今日及未来账单，补齐后续账单并恢复提醒。手动标记无效的账单不会恢复。`,
+        `规则「${plan.value.name}」(#${targetId})。启用后会恢复因停用而失效的今日及未来账单，补齐后续账单并恢复提醒。周期规则的自动移除会取消；单次规则仍在账单日期自动移除。手动标记无效的账单不会恢复。`,
         '确认启用',
         { type: 'info', confirmButtonText: '启用', cancelButtonText: '取消' },
       )
@@ -319,6 +327,10 @@ watch(
         :plan="plan"
         :submitting="submitting"
         :field-errors="fieldErrors"
+        :groups="groups"
+        :groups-loading="groupsLoading"
+        :groups-error="Boolean(groupsError)"
+        @reload-groups="reloadGroups"
         @submit="save"
         @cancel="cancelEdit" /></el-card
     ><el-card v-else-if="plan"
@@ -336,8 +348,11 @@ watch(
         </div>
       </div>
       <el-descriptions :column="1" border class="plan-details"
+        ><el-descriptions-item label="分组">{{ groupName }}</el-descriptions-item
         ><el-descriptions-item label="ID">{{ plan.id }}</el-descriptions-item
         ><el-descriptions-item label="首次日期">{{ plan.first_due_date }}</el-descriptions-item
+        ><el-descriptions-item v-if="plan.end_date" label="自动移除日期"
+          >{{ plan.end_date }} · 账单记录保留，结束提醒沿用通知设置</el-descriptions-item
         ><el-descriptions-item label="周期">{{
           formatCycle(plan.cycle_type, plan.cycle_days, plan.cycle_interval)
         }}</el-descriptions-item

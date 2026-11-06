@@ -58,11 +58,27 @@ class SessionRecord(Base):
     __table_args__ = (Index("ix_sessions_user_id", "user_id"), Index("ix_sessions_expires_at", "expires_at"))
 
 
+class BillPlanGroup(Base):
+    __tablename__ = "bill_plan_groups"
+
+    id: Mapped[int] = mapped_column(BIGINT(unsigned=True).with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(INTEGER(unsigned=True), ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    sort_order: Mapped[int] = mapped_column(INTEGER(unsigned=True), nullable=False, default=0, server_default="0")
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_bill_plan_groups_user_name"),
+        Index("ix_bill_plan_groups_user_order", "user_id", "sort_order"),
+    )
+
+
 class BillPlan(Base):
     __tablename__ = "bill_plans"
 
     id: Mapped[int] = mapped_column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(INTEGER(unsigned=True), ForeignKey("users.id"), nullable=False)
+    group_id: Mapped[int | None] = mapped_column(BIGINT(unsigned=True), ForeignKey("bill_plan_groups.id"))
+    sort_order: Mapped[int] = mapped_column(INTEGER(unsigned=True), nullable=False, default=0, server_default="0")
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     first_due_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -72,12 +88,18 @@ class BillPlan(Base):
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     note: Mapped[str | None] = mapped_column(Text)
     deleted_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    end_date: Mapped[date | None] = mapped_column(Date)
+    ended_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
     created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
 
     user: Mapped[User] = relationship(back_populates="plans")
     occurrences: Mapped[list[BillOccurrence]] = relationship(back_populates="plan")
-    __table_args__ = (Index("ix_bill_plans_user_enabled", "user_id", "is_enabled"),)
+    __table_args__ = (
+        Index("ix_bill_plans_user_enabled", "user_id", "is_enabled"),
+        Index("ix_bill_plans_user_group_order", "user_id", "group_id", "sort_order"),
+        Index("ix_bill_plans_user_end", "user_id", "end_date"),
+    )
 
 
 class BillOccurrence(Base):

@@ -5,6 +5,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import BillPlanForm from '@/components/billing/BillPlanForm.vue'
+import type { BillPlan, BillPlanPayload } from '@/types/api'
 const router = createRouter({
   history: createMemoryHistory(),
   routes: [{ path: '/', component: { template: '<div />' } }],
@@ -20,6 +21,39 @@ const ElFormStub = defineComponent({
 beforeEach(() => setActivePinia(createPinia()))
 
 describe('BillPlanForm', () => {
+  it('preserves concurrent group moves unless the edited form explicitly changes the group', async () => {
+    const plan: BillPlan = {
+      id: 1,
+      group_id: 5,
+      name: '云服务',
+      amount: '12.50',
+      first_due_date: '2026-07-20',
+      cycle_type: 'month',
+      cycle_interval: 1,
+      cycle_days: null,
+      is_enabled: true,
+      note: null,
+      created_at: '',
+      updated_at: '',
+      future_bills_rebuilt: false,
+    }
+    const wrapper = shallowMount(BillPlanForm, {
+      props: { plan, groupsError: true },
+      global: { plugins: [router], stubs: { 'el-form': ElFormStub } },
+    })
+    const vm = wrapper.vm as unknown as { form: BillPlanPayload; submit: () => Promise<void> }
+    vm.form.amount = '20.00'
+    await vm.submit()
+    expect(vm.form.group_id).toBe(5)
+    expect(JSON.parse(JSON.stringify(wrapper.emitted('submit')?.[0]?.[0]))).not.toHaveProperty(
+      'group_id',
+    )
+    await wrapper.setProps({ groupsError: false })
+    vm.form.group_id = null
+    await vm.submit()
+    expect(wrapper.emitted('submit')?.[1]?.[0]).toMatchObject({ group_id: null })
+  })
+
   it('enforces the supported custom cycle bounds in the form validator', () => {
     const wrapper = shallowMount(BillPlanForm, { global: { plugins: [router] } })
     const vm = wrapper.vm as unknown as {
@@ -79,6 +113,7 @@ describe('BillPlanForm', () => {
     expect(wrapper.find('[data-test="cycle-days"]').attributes('max')).toBe('36500')
     await vm.submit()
     expect(wrapper.emitted('submit')?.[0]?.[0]).toEqual({
+      group_id: null,
       name: '云服务',
       amount: '12.50',
       first_due_date: '2026-07-20',

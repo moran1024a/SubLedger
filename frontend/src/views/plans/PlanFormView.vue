@@ -14,8 +14,10 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import BillPlanForm from '@/components/billing/BillPlanForm.vue'
 import { getFieldErrors, isUncertainWrite, writeErrorMessage } from '@/utils/apiErrors'
 import { useViewScope } from '@/composables/useViewScope'
+import { usePlanGroups } from '@/composables/usePlanGroups'
 
 const router = useRouter()
+const { groups, loading: groupsLoading, error: groupsError, reload: reloadGroups } = usePlanGroups()
 const formComponent = ref<InstanceType<typeof BillPlanForm>>()
 const operationMessage = ref('')
 const submitting = ref(false)
@@ -70,6 +72,10 @@ async function save(payload: BillPlanPayload) {
         ref="formComponent"
         :submitting="submitting"
         :field-errors="fieldErrors"
+        :groups="groups"
+        :groups-loading="groupsLoading"
+        :groups-error="Boolean(groupsError)"
+        @reload-groups="reloadGroups"
         @submit="save"
         @cancel="router.push('/plans')"
     /></el-card>

@@ -3,6 +3,7 @@ import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import BillDetailDrawer from '@/components/billing/BillDetailDrawer.vue'
+import BillCalendar from '@/components/billing/BillCalendar.vue'
 import HomeView from '@/views/HomeView.vue'
 import { getBill, listBills, updateBillValidity } from '@/api/bills'
 import { getSummary } from '@/api/statistics'
@@ -124,7 +125,7 @@ describe('home next bill card', () => {
     today: { count: 1, amount: '12.50' },
     current_month: { count: 3, amount: '59.70' },
     current_year: { count: 36, amount: '716.40' },
-    averages: { monthly: '42.50', daily: '1.40' },
+    averages: { monthly: '42.50', daily: '1.40', yearly: '510.00' },
     next_bill: next,
   })
   async function mountHome(next: StatisticsResponse['next_bill']) {
@@ -142,6 +143,7 @@ describe('home next bill card', () => {
         stubs: {
           PageHeader: true,
           BillDetailDrawer: true,
+          BillCalendar: true,
           'router-link': { template: '<a><slot /></a>' },
           'el-card': { template: '<div class="card"><slot name="header" /><slot /></div>' },
           'el-button': { template: '<button type="button"><slot /></button>' },
@@ -152,6 +154,20 @@ describe('home next bill card', () => {
     return { wrapper, router }
   }
 
+  it('opens calendar bills in the same drawer and refreshes the calendar after a change', async () => {
+    const { wrapper, router } = await mountHome(null)
+    const calendar = wrapper.findComponent(BillCalendar)
+    expect(calendar.props('refreshKey')).toBe(0)
+    calendar.vm.$emit('openBill', 101, new Event('click'))
+    await flushPromises()
+    expect(router.currentRoute.value.query.bill_id).toBe('101')
+    wrapper.findComponent(BillDetailDrawer).vm.$emit('changed')
+    await flushPromises()
+    expect(calendar.props('refreshKey')).toBe(1)
+    expect(getSummary).toHaveBeenCalledTimes(2)
+    expect(listBills).toHaveBeenCalledTimes(2)
+  })
+
   it('shows four metrics and opens the next bill in the drawer', async () => {
     const { wrapper, router } = await mountHome({
       bill_id: 101,
@@ -161,7 +177,18 @@ describe('home next bill card', () => {
       days_remaining: 1,
     })
     const labels = wrapper.findAll('.metric-label').map((item) => item.text())
-    expect(labels).toEqual(['今日', '本月预计', '全年预计', '下一笔账单'])
+    expect(labels).toEqual(['今日', '本月预计', '折算均值', '下一笔账单'])
+    expect(wrapper.findAll('.metric-card')).toHaveLength(4)
+    expect(wrapper.findAll('.average-values dt').map((item) => item.text())).toEqual([
+      '月均',
+      '日均',
+      '年均',
+    ])
+    expect(wrapper.findAll('.average-values dd').map((item) => item.text())).toEqual([
+      '¥42.50',
+      '¥1.40',
+      '¥510.00',
+    ])
     expect(wrapper.findAll('.metric-number')[0]!.text()).toBe('¥12.50')
     const next = wrapper.find('.next-bill')
     expect(next.text()).toContain('示例订阅')

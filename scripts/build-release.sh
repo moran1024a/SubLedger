@@ -162,7 +162,6 @@ copy_entries=(
   'backend/docker/entrypoint.sh'
   'backend/pyproject.toml'
   'backend/tests'
-  'frontend/.gitkeep'
   'frontend/.prettierrc.json'
   'frontend/README.md'
   'frontend/eslint.config.js'

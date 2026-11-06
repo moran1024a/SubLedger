@@ -4,7 +4,7 @@ from calendar import monthrange
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models import BillOccurrence, BillPlan, User
@@ -71,7 +71,7 @@ def summary(db: Session, user: User) -> dict:
         .where(
             BillOccurrence.user_id == user.id,
             BillPlan.user_id == user.id,
-            BillPlan.deleted_at.is_(None),
+            or_(BillPlan.deleted_at.is_(None), BillPlan.ended_at.is_not(None)),
             BillOccurrence.is_valid.is_(True),
             BillOccurrence.due_date >= today,
         )
@@ -82,4 +82,6 @@ def summary(db: Session, user: User) -> dict:
     if next_row is not None:
         occurrence, plan = next_row
         next_bill = {"bill_id": occurrence.id, "name": plan.name, "amount": money(Decimal(occurrence.amount_snapshot)), "due_date": occurrence.due_date, "days_remaining": (occurrence.due_date - today).days}
-    return {"date": today, "today": {"amount": money(today_total), "count": today_count}, "current_month": {"amount": money(month_total), "count": month_count}, "averages": {"monthly": money(monthly_average), "daily": money(daily_average)}, "current_year": {"amount": money(year_total), "count": year_count}, "next_bill": next_bill}
+    # Annualize the unrounded value; multiplying the displayed monthly amount loses cents.
+    yearly_average = monthly_average * Decimal(12)
+    return {"date": today, "today": {"amount": money(today_total), "count": today_count}, "current_month": {"amount": money(month_total), "count": month_count}, "averages": {"monthly": money(monthly_average), "daily": money(daily_average), "yearly": money(yearly_average)}, "current_year": {"amount": money(year_total), "count": year_count}, "next_bill": next_bill}

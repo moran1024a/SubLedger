@@ -671,6 +671,9 @@ onMounted(load)
           </div></el-card
         ><el-card class="content-card"
           ><template #header><h2 class="section-title">提醒时间</h2></template>
+          <p class="hint">
+            提前天数和发送时间同时用于账单提醒与周期结束提醒。停用的周期规则在下一个付款日自动移除，单次规则在账单日期自动移除，账单记录保留。关闭提醒不影响自动移除。
+          </p>
           <div class="reminder-row">
             <el-form-item label="提前提醒"
               ><el-switch v-model="form.advance_enabled" /></el-form-item

@@ -3,7 +3,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, get_db
@@ -30,7 +30,7 @@ ERROR_MESSAGES = {
 @router.get("", response_model=NotificationRecordPage)
 def list_records(
     channel: Literal["email", "feishu"] | None = None,
-    status: Literal["pending", "retry_wait", "sent", "failed", "unknown", "expired"] | None = None,
+    status: Literal["pending", "retry_wait", "sent", "failed", "unknown", "expired", "cancelled"] | None = None,
     start_date: date | None = None, end_date: date | None = None,
     page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
     user: User = Depends(get_current_user), db: Session = Depends(get_db),
@@ -46,8 +46,16 @@ def list_records(
             return datetime.min if value.year == 1 else datetime.max
 
     today = utc_now().replace(tzinfo=timezone.utc).astimezone(zone).date()
+    pending = NotificationRecord.status.in_(["pending", "retry_wait"])
+    # Like expiry, cancellation is derived from current eligibility. Re-enabling
+    # recurring rules stops end reminders; one-off rules still end on their due date.
+    cancelled_ending = and_(
+        pending, NotificationRecord.reminder_type.in_(["end_advance", "end_same_day"]),
+        BillPlan.is_enabled.is_(True), BillPlan.cycle_type != "once",
+    )
     effective_status = case(
-        ((NotificationRecord.status.in_(["pending", "retry_wait"])) & (NotificationRecord.scheduled_at < midnight(today)), "expired"),
+        (cancelled_ending, "cancelled"),
+        (pending & (NotificationRecord.scheduled_at < midnight(today)), "expired"),
         else_=NotificationRecord.status,
     )
     filters = [NotificationRecord.user_id == user.id, BillPlan.user_id == user.id]

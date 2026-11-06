@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request, status
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, get_db
 from app.errors import AppError
-from app.models import BillPlan, User
+from app.models import BillPlan, BillPlanGroup, User
 from app.schemas import BillPlanCreate, BillPlanPatch, BillPlanResponse
 from app.services.billing import create_plan, delete_plan, disable_plan, enable_plan, local_today, plan_response, update_plan
 from app.services.logging import write_user_log
@@ -31,7 +31,14 @@ def add_plan(payload: BillPlanCreate, request: Request, user: User = Depends(get
 
 @router.get("", response_model=list[BillPlanResponse])
 def list_plans(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return [plan_response(plan) for plan in db.scalars(select(BillPlan).where(BillPlan.user_id == user.id, BillPlan.deleted_at.is_(None)).order_by(BillPlan.id.desc()))]
+    query = select(BillPlan).outerjoin(BillPlanGroup, and_(
+        BillPlanGroup.user_id == BillPlan.user_id,
+        or_(BillPlanGroup.id == BillPlan.group_id,
+            and_(BillPlan.group_id.is_(None), BillPlanGroup.is_default.is_(True))),
+    )).where(BillPlan.user_id == user.id, BillPlan.deleted_at.is_(None)).order_by(
+        BillPlanGroup.sort_order, BillPlan.sort_order, BillPlan.id.desc(),
+    )
+    return [plan_response(plan) for plan in db.scalars(query)]
 
 
 @router.get("/{plan_id}", response_model=BillPlanResponse)

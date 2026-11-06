@@ -38,6 +38,7 @@ class Scheduler:
             key: TaskState(key, name) for key, name in (
                 ("bill_completion", "账单补全"), ("notification_check", "通知检查"),
                 ("log_cleanup", "日志清理"), ("session_cleanup", "过期会话清理"),
+                ("plan_expiration", "周期结束处理"),
             )
         }
 
@@ -50,6 +51,9 @@ class Scheduler:
             ("notification_check", self._run_notification_check, "interval", dict(seconds=config.notification_interval_seconds)),
             ("log_cleanup", self._run_log_cleanup, "cron", dict(hour=config.log_cleanup_hour)),
             ("session_cleanup", self._run_session_cleanup, "cron", dict(hour=config.session_cleanup_hour)),
+            ("plan_expiration", self._run_plan_expiration, "interval", dict(
+                seconds=config.notification_interval_seconds, next_run_time=datetime.now(timezone.utc),
+            )),
         )
         for key, function, trigger, arguments in jobs:
             self.scheduler.add_job(function, trigger, id=key, replace_existing=True, max_instances=1, coalesce=True, **arguments)
@@ -72,7 +76,7 @@ class Scheduler:
             tasks = []
             for key, state in self._states.items():
                 item = asdict(state)
-                grace = max(120, 2 * self.settings.scheduler.notification_interval_seconds) if key == "notification_check" and enabled else 600
+                grace = max(120, 2 * self.settings.scheduler.notification_interval_seconds) if key in {"notification_check", "plan_expiration"} and enabled else 600
                 overdue = state.next_run_at is not None and now > state.next_run_at + timedelta(seconds=grace)
                 too_long = state.running and monotonic() - self._started_monotonic[key] > self.settings.scheduler.task_timeout_seconds
                 if not enabled:
@@ -101,7 +105,7 @@ class Scheduler:
         try:
             counts = function()
             if isinstance(counts, dict) and counts.get("errors", 0):
-                error = "NotificationCheckError"
+                error = "NotificationCheckError" if key == "notification_check" else "TaskCheckError"
         except Exception as exc:
             error = type(exc).__name__
         finally:
@@ -127,6 +131,10 @@ class Scheduler:
     def _run_notification_check(self) -> None:
         from app.services.notifications import check_notifications
         self._run("notification_check", lambda: check_notifications(self.database, self.settings, self.fernet))
+
+    def _run_plan_expiration(self) -> None:
+        from app.services.plan_lifecycle import finish_ended_plans
+        self._run("plan_expiration", lambda: finish_ended_plans(self.database, self.settings))
 
     def _run_log_cleanup(self) -> None:
         self._run("log_cleanup", lambda: {"removed": cleanup_logs(self.settings)})

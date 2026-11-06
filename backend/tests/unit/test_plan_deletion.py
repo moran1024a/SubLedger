@@ -144,6 +144,7 @@ def test_delete_plan_preserves_passed_bill_and_removes_today_and_future(session_
             "due_date": date(2026, 7, 21),
             "amount": "12.50",
             "is_valid": True,
+            "can_restore": True,
             "time_status": "passed",
             "cycle_type": "month",
             "cycle_interval": 1,

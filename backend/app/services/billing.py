@@ -98,6 +98,16 @@ def _future_plan_dates(plan: BillPlan, today: date):
     yield from iter_plan_dates(plan, today, date.max)
 
 
+def next_end_date(plan: BillPlan, today: date) -> date | None:
+    return plan.first_due_date if plan.cycle_type == "once" else next(_future_plan_dates(plan, today), None)
+
+
+def plan_end_date(plan: BillPlan) -> date | None:
+    if plan.cycle_type == "once":
+        return plan.first_due_date
+    return plan.end_date if not plan.is_enabled else None
+
+
 def ensure_plan_occurrences(db: Session, plan: BillPlan, today: date) -> list[BillOccurrence]:
     plan = _lock_plan(db, plan)
     if plan.deleted_at is not None or not plan.is_enabled:
@@ -128,10 +138,16 @@ def ensure_plan_occurrences(db: Session, plan: BillPlan, today: date) -> list[Bi
 
 
 def create_plan(db: Session, user: User, data, today: date) -> BillPlan:
-    db.execute(select(User.id).where(User.id == user.id).with_for_update(read=True)).first()
+    from app.services.plan_groups import lock_layout_user, next_plan_position, resolve_group
+    lock_layout_user(db, user.id)
+    group_id = resolve_group(db, user.id, data.group_id)
     now = utc_now()
     kind, interval = normalize_cycle(data.cycle_type, data.cycle_days, data.cycle_interval, validate=True)
     plan = BillPlan(user_id=user.id, name=data.name, amount=data.amount, first_due_date=data.first_due_date, cycle_type=kind, cycle_interval=interval, cycle_days=None, is_enabled=True, note=data.note, created_at=now, updated_at=now)
+    plan.group_id = group_id
+    plan.sort_order = next_plan_position(db, user.id, group_id)
+    if kind == "once":
+        plan.end_date = plan.first_due_date
     db.add(plan)
     db.flush()
     if plan.cycle_type != "once" and plan.first_due_date < today:
@@ -142,9 +158,16 @@ def create_plan(db: Session, user: User, data, today: date) -> BillPlan:
 
 
 def update_plan(db: Session, plan: BillPlan, values: dict, today: date) -> bool:
+    if "group_id" in values:
+        from app.services.plan_groups import lock_layout_user, next_plan_position, resolve_group
+        lock_layout_user(db, plan.user_id)
     plan = _lock_plan(db, plan)
     _require_live_plan(plan)
     values = values.copy()
+    if "group_id" in values:
+        values["group_id"] = resolve_group(db, plan.user_id, values["group_id"])
+        if values["group_id"] != plan.group_id:
+            values["sort_order"] = next_plan_position(db, plan.user_id, values["group_id"])
     next_cycle = values.get("cycle_type", plan.cycle_type)
     next_days = values.get("cycle_days", plan.cycle_days if next_cycle == "custom_days" else None)
     interval = values.get("cycle_interval", (getattr(plan, "cycle_interval", None) or 1) if next_cycle == plan.cycle_type else 1)
@@ -165,6 +188,7 @@ def update_plan(db: Session, plan: BillPlan, values: dict, today: date) -> bool:
         setattr(plan, key, value)
     plan.updated_at = utc_now()
     if schedule_changed:
+        plan.end_date = next_end_date(plan, today) if not plan.is_enabled or kind == "once" else None
         db.execute(
             delete(NotificationRecord).where(
                 NotificationRecord.plan_id == plan.id,
@@ -199,6 +223,8 @@ def disable_plan(db: Session, plan: BillPlan, today: date) -> None:
     was_enabled = plan.is_enabled
     plan.is_enabled = False
     plan.updated_at = utc_now()
+    if was_enabled or plan.end_date is None:
+        plan.end_date = next_end_date(plan, today)
     if not was_enabled:
         return
     now = utc_now()
@@ -221,6 +247,7 @@ def enable_plan(db: Session, plan: BillPlan, today: date) -> None:
     _require_live_plan(plan)
     was_enabled = plan.is_enabled
     plan.is_enabled = True
+    plan.end_date = plan.first_due_date if plan.cycle_type == "once" else None
     plan.updated_at = utc_now()
     if not was_enabled:
         now = utc_now()
@@ -241,6 +268,8 @@ def enable_plan(db: Session, plan: BillPlan, today: date) -> None:
 
 
 def delete_plan(db: Session, plan: BillPlan, today: date) -> None:
+    from app.services.plan_groups import lock_layout_user
+    lock_layout_user(db, plan.user_id)
     plan = _lock_plan(db, plan)
     _require_live_plan(plan)
     future_bill_ids = select(BillOccurrence.id).where(
@@ -265,6 +294,8 @@ def delete_plan(db: Session, plan: BillPlan, today: date) -> None:
     now = utc_now()
     plan.is_enabled = False
     plan.deleted_at = now
+    plan.end_date = None
+    plan.ended_at = None
     plan.updated_at = now
     db.flush()
 
@@ -281,8 +312,17 @@ def complete_all_active_plans(database) -> None:
 
 
 def plan_response(plan: BillPlan) -> dict:
-    return {"id": plan.id, "name": plan.name, "amount": f"{Decimal(plan.amount):.2f}", "first_due_date": plan.first_due_date, "cycle_type": plan_cycle(plan)[0], "cycle_interval": plan_cycle(plan)[1], "cycle_days": None, "is_enabled": plan.is_enabled, "note": plan.note, "created_at": plan.created_at, "updated_at": plan.updated_at}
+    return {"id": plan.id, "group_id": getattr(plan, "group_id", None), "sort_order": getattr(plan, "sort_order", 0), "name": plan.name, "amount": f"{Decimal(plan.amount):.2f}", "first_due_date": plan.first_due_date, "cycle_type": plan_cycle(plan)[0], "cycle_interval": plan_cycle(plan)[1], "cycle_days": None, "is_enabled": plan.is_enabled, "end_date": plan_end_date(plan), "note": plan.note, "created_at": plan.created_at, "updated_at": plan.updated_at}
+
+
+def can_restore_occurrence(occurrence: BillOccurrence, plan: BillPlan, today: date) -> bool:
+    # Automatic completion does not cancel a one-off bill on its due date.
+    completed_once = (
+        plan.cycle_type == "once" and getattr(plan, "ended_at", None) is not None
+        and occurrence.due_date == plan.first_due_date and occurrence.due_date <= today
+    )
+    return plan.is_enabled or occurrence.due_date < today or completed_once
 
 
 def occurrence_response(occurrence: BillOccurrence, plan: BillPlan, today: date) -> dict:
-    return {"id": occurrence.id, "plan_id": occurrence.plan_id, "plan_name": plan.name, "due_date": occurrence.due_date, "amount": f"{Decimal(occurrence.amount_snapshot):.2f}", "is_valid": occurrence.is_valid, "time_status": "upcoming" if occurrence.due_date >= today else "passed", "cycle_type": plan_cycle(plan)[0], "cycle_interval": plan_cycle(plan)[1], "cycle_days": None, "plan_status": "deleted" if getattr(plan, "deleted_at", None) else "enabled" if plan.is_enabled else "disabled"}
+    return {"id": occurrence.id, "plan_id": occurrence.plan_id, "plan_name": plan.name, "due_date": occurrence.due_date, "amount": f"{Decimal(occurrence.amount_snapshot):.2f}", "is_valid": occurrence.is_valid, "can_restore": can_restore_occurrence(occurrence, plan, today), "time_status": "upcoming" if occurrence.due_date >= today else "passed", "cycle_type": plan_cycle(plan)[0], "cycle_interval": plan_cycle(plan)[1], "cycle_days": None, "plan_status": "deleted" if getattr(plan, "deleted_at", None) else "enabled" if plan.is_enabled else "disabled"}

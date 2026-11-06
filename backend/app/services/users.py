@@ -6,7 +6,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
-from app.models import NotificationSetting, SessionRecord, User
+from app.models import BillPlanGroup, NotificationSetting, SessionRecord, User
 from app.security import hash_password
 
 
@@ -45,6 +45,7 @@ def create_user(db: Session, username: str, password: str, timezone_name: str, c
     db.add(user)
     db.flush()
     db.add(NotificationSetting(user_id=user.id, advance_time=time(9, 0), same_day_time=time(8, 30), updated_at=utc_now()))
+    db.add(BillPlanGroup(user_id=user.id, name="未分组", is_default=True))
     return user
 
 

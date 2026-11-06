@@ -47,7 +47,7 @@ def notification_database(monkeypatch):
         for plan_id, user_id in ((1, 1), (2, 1), (3, 2)):
             db.add(BillPlan(
                 id=plan_id, user_id=user_id, name=f"plan-{plan_id}", amount=Decimal("1.00"),
-                cycle_type="once", first_due_date=now.date(), cycle_days=None,
+                cycle_type="month", first_due_date=now.date(), cycle_days=None,
                 is_enabled=True, created_at=now, updated_at=now,
             ))
         db.commit()

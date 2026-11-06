@@ -109,12 +109,12 @@ describe('PlanDetailView', () => {
     expect(updatePlan).toHaveBeenCalledWith(2, payload)
   })
 
-  it('explains that disabling reduces today, month and year totals', async () => {
+  it('explains automatic removal and cycle-end reminders when disabling', async () => {
     const wrapper = mountView()
     await flushPromises()
     await (wrapper.vm as unknown as { toggle: () => Promise<void> }).toggle()
     expect(ElMessageBox.confirm).toHaveBeenCalledWith(
-      expect.stringContaining('今日、本月、全年合计会同步减少'),
+      expect.stringContaining('自动移除，并按提醒设置发送周期结束提醒'),
       '确认停用',
       expect.any(Object),
     )

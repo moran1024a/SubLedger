@@ -9,6 +9,7 @@ export const notificationLabels: Record<NotificationStatus, string> = {
   failed: '失败',
   unknown: '结果未知',
   expired: '已过提醒日期',
+  cancelled: '已取消',
 }
 export function readNotificationQuery(
   query: LocationQuery,

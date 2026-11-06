@@ -13,12 +13,12 @@ from email.message import EmailMessage
 from email.utils import formataddr
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from app.config import NotificationConfig
 from app.models import BillOccurrence, BillPlan, NotificationRecord, NotificationSetting, User
 from app.security import decrypt_secret
-from app.services.billing import iter_plan_dates
+from app.services.billing import iter_plan_dates, plan_end_date
 from app.services.logging import write_system_log
 from app.services.outbound import (
     SendDeadline,
@@ -210,12 +210,14 @@ def check_notifications(database, settings, fernet) -> dict:
                 setting = db.get(NotificationSetting, user_id)
                 if user is None or not user.is_active or setting is None:
                     continue
-                local_now = datetime.now(timezone.utc).astimezone(ZoneInfo(user.timezone))
+                local_now = utc_now().replace(tzinfo=timezone.utc).astimezone(ZoneInfo(user.timezone))
                 plan_ids = db.scalars(
                     select(BillPlan.id).where(
                         BillPlan.user_id == user_id,
-                        BillPlan.is_enabled.is_(True),
-                        BillPlan.deleted_at.is_(None),
+                        or_(
+                            BillPlan.deleted_at.is_(None),
+                            and_(BillPlan.ended_at.is_not(None), BillPlan.end_date == local_now.date()),
+                        ),
                     ).order_by(BillPlan.id)
                 ).all()
                 reminder_specs = []
@@ -235,6 +237,10 @@ def check_notifications(database, settings, fernet) -> dict:
                             plan = db.get(BillPlan, plan_id)
                             if plan is None:
                                 continue
+                            ending = plan_end_date(plan) is not None
+                            if ending and reminder_type == "advance" and setting.advance_days == 0 and setting.same_day_enabled:
+                                continue
+                            actual_type = "end_" + reminder_type if ending else reminder_type
                             channels = []
                             if setting.email_enabled:
                                 channels.append("email")
@@ -243,7 +249,7 @@ def check_notifications(database, settings, fernet) -> dict:
                             for channel in channels:
                                 outcome = _attempt_notification(
                                     db, settings, fernet, plan,
-                                    due_date, channel, reminder_type,
+                                    due_date, channel, actual_type,
                                     scheduled_local.astimezone(timezone.utc).replace(tzinfo=None),
                                 )
                                 # _attempt_notification can skip a previously sent
@@ -289,12 +295,35 @@ def _eligible_record(record, now):
     )
 
 
+def _eligible_plan(plan, due_date, reminder_type):
+    if plan is None:
+        return False
+    if reminder_type in {"end_advance", "end_same_day"}:
+        # Auto-ended rules remain eligible for their final reminder and retries.
+        # Manual deletion is excluded, and re-enabling recurring rules clears end_date.
+        return (plan.deleted_at is None or plan.ended_at is not None) and plan_end_date(plan) == due_date
+    return (reminder_type in {"advance", "same_day"} and plan.is_enabled
+            and plan.deleted_at is None and plan.cycle_type != "once"
+            and due_date in set(iter_plan_dates(plan, due_date, due_date)))
+
+
+def _legacy_once_record(db, plan, due_date, channel, reminder_type):
+    # Preserve the delivery state of one-off reminders created before upgrade.
+    if plan.cycle_type != "once" or not reminder_type.startswith("end_"):
+        return None
+    return db.scalar(select(NotificationRecord).where(
+        NotificationRecord.plan_id == plan.id, NotificationRecord.due_date == due_date,
+        NotificationRecord.channel == channel,
+        NotificationRecord.reminder_type == reminder_type.removeprefix("end_"),
+    ).with_for_update().execution_options(populate_existing=True))
+
+
 def _attempt_notification(db, settings, fernet, plan, due_date, channel, reminder_type, scheduled_at):
     snapshot = db.get(NotificationSetting, plan.user_id)
     if snapshot is None or channel not in {"email", "feishu"} or not getattr(snapshot, f"{channel}_enabled"):
         return
     # Avoid DNS for rules that are not due and notifications already completed.
-    if not plan.is_enabled or plan.deleted_at is not None or due_date not in set(iter_plan_dates(plan, due_date, due_date)):
+    if not _eligible_plan(plan, due_date, reminder_type):
         return
     business_key = (
         NotificationRecord.plan_id == plan.id, NotificationRecord.due_date == due_date,
@@ -313,10 +342,14 @@ def _attempt_notification(db, settings, fernet, plan, due_date, channel, reminde
     setting = db.scalar(select(NotificationSetting).where(NotificationSetting.user_id == plan.user_id).with_for_update().execution_options(populate_existing=True))
     if user is None or not user.is_active or setting is None or setting_version(setting) != version:
         return
-    if reminder_type not in {"advance", "same_day"} or not getattr(setting, f"{reminder_type}_enabled"):
+    base_type = reminder_type.removeprefix("end_")
+    ending = reminder_type.startswith("end_")
+    if base_type not in {"advance", "same_day"} or not getattr(setting, f"{base_type}_enabled"):
         return
-    days = setting.advance_days if reminder_type == "advance" else 0
-    reminder_time = setting.advance_time if reminder_type == "advance" else setting.same_day_time
+    if ending and base_type == "advance" and setting.advance_days == 0 and setting.same_day_enabled:
+        return
+    days = setting.advance_days if base_type == "advance" else 0
+    reminder_time = setting.advance_time if base_type == "advance" else setting.same_day_time
     zone = ZoneInfo(user.timezone)
     scheduled_local = datetime.combine(due_date - timedelta(days=days), reminder_time, tzinfo=zone)
     expected = scheduled_local.astimezone(timezone.utc).replace(tzinfo=None)
@@ -324,12 +357,19 @@ def _attempt_notification(db, settings, fernet, plan, due_date, channel, reminde
     if scheduled_at != expected or scheduled_local.date() != now.replace(tzinfo=timezone.utc).astimezone(zone).date() or expected > now:
         return
     plan = db.scalar(select(BillPlan).where(BillPlan.id == plan.id).with_for_update().execution_options(populate_existing=True))
-    if plan is None or not plan.is_enabled or plan.deleted_at is not None or due_date not in set(iter_plan_dates(plan, due_date, due_date)):
+    if not _eligible_plan(plan, due_date, reminder_type):
         return
     occurrence = db.scalar(select(BillOccurrence).where(BillOccurrence.plan_id == plan.id, BillOccurrence.due_date == due_date).with_for_update().execution_options(populate_existing=True))
-    if occurrence is not None and not occurrence.is_valid:
+    if not ending and occurrence is not None and not occurrence.is_valid:
+        return
+    legacy = _legacy_once_record(db, plan, due_date, channel, reminder_type)
+    if legacy is not None and not _eligible_record(legacy, now):
         return
     record = db.scalar(select(NotificationRecord).where(*business_key).with_for_update().execution_options(populate_existing=True))
+    if record is None and legacy is not None:
+        # Rename in place: keep its ID, attempt budget, retry delay and history.
+        record = legacy
+        record.reminder_type = reminder_type
     if not _eligible_record(record, now):
         return
     if record is None:
@@ -341,13 +381,22 @@ def _attempt_notification(db, settings, fernet, plan, due_date, channel, reminde
     record.next_retry_at = None
     record.status = "sending"
     db.flush()
+    subject = "SubLedger 账单提醒"
     content = f"{plan.name} 将于 {due_date.isoformat()} 产生账单，金额 {plan.amount:.2f}。"
+    if ending:
+        subject = "SubLedger 周期结束提醒"
+        when = "今日" if due_date == scheduled_local.date() else due_date.isoformat()
+        if plan.cycle_type == "once" and (occurrence is None or occurrence.is_valid):
+            amount = occurrence.amount_snapshot if occurrence else plan.amount
+            content = f"单次账单「{plan.name}」于{when}到期，金额 {amount:.2f}。规则在到期日自动移除，账单记录保留。"
+        else:
+            content = f"「{plan.name}」的周期于{when}结束，不再续期。规则在结束日自动移除，历史账单记录保留。"
     try:
         if preparation_error:
             raise preparation_error
         if channel == "email":
             password = decrypt_secret(fernet, setting.smtp_password_encrypted) or ""
-            _send_email(setting, password, "SubLedger 账单提醒", content, settings, target)
+            _send_email(setting, password, subject, content, settings, target)
         else:
             _send_feishu(decrypt_secret(fernet, setting.feishu_webhook_encrypted), decrypt_secret(fernet, setting.feishu_secret_encrypted), content, settings, target)
         record.status = "sent"

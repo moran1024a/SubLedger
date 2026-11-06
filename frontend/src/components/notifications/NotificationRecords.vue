@@ -55,7 +55,19 @@ let applied: NotificationFilters = {}
 const dateText = (value: string | null) =>
   value ? formatDateTime(value, auth.user?.timezone) : '—'
 const statusTone = (value: NotificationStatus) =>
-  value === 'sent' ? 'success' : value === 'failed' ? 'danger' : 'warning'
+  value === 'sent'
+    ? 'success'
+    : value === 'failed'
+      ? 'danger'
+      : value === 'cancelled'
+        ? 'info'
+        : 'warning'
+const reminderLabels: Record<NotificationRecord['reminder_type'], string> = {
+  advance: '账单提前提醒',
+  same_day: '账单当日提醒',
+  end_advance: '周期结束 · 提前提醒',
+  end_same_day: '周期结束 · 当日提醒',
+}
 async function load() {
   const signal = queries.next()
   const key = JSON.stringify({ ...applied, page: page.value, page_size: pageSize.value })
@@ -186,21 +198,18 @@ watch(
     <template v-if="hasLoaded">
       <el-table class="desktop-records" :data="records" row-key="id" empty-text="暂无通知记录">
         <el-table-column prop="plan_name" label="账单规则" min-width="140" />
-        <el-table-column prop="due_date" label="账单日期" min-width="115" />
-        <el-table-column label="渠道 / 提醒" min-width="125"
+        <el-table-column prop="due_date" label="账单 / 结束日期" min-width="135" />
+        <el-table-column label="渠道 / 提醒" min-width="220"
           ><template #default="{ row }"
             >{{ row.channel === 'email' ? '邮件' : '飞书' }} /
-            {{ row.reminder_type === 'advance' ? '提前' : '当日' }}</template
+            {{ reminderLabels[row.reminder_type as NotificationRecord['reminder_type']] }}</template
           ></el-table-column
         >
         <el-table-column label="状态" min-width="120"
           ><template #default="{ row }"
-            ><el-tag
-              :type="
-                row.status === 'sent' ? 'success' : row.status === 'failed' ? 'danger' : 'warning'
-              "
-              >{{ labels[row.status as NotificationStatus] }}</el-tag
-            ></template
+            ><el-tag :type="statusTone(row.status)">{{
+              labels[row.status as NotificationStatus]
+            }}</el-tag></template
           ></el-table-column
         >
         <el-table-column label="计划提醒" min-width="170"
@@ -235,7 +244,7 @@ watch(
           <template #meta>
             <p>
               {{ record.channel === 'email' ? '邮件' : '飞书' }} ·
-              {{ record.reminder_type === 'advance' ? '提前提醒' : '当日提醒' }} · 账单
+              {{ reminderLabels[record.reminder_type] }} ·
               {{ record.due_date }}
             </p>
             <p>计划提醒：{{ dateText(record.scheduled_at) }}</p>
